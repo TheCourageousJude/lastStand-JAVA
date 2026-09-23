@@ -1,7 +1,6 @@
 # Last Stand — v1.0.0
 
-See [CHANGELOG.md](CHANGELOG.md) for what changed in this release.
-
+Hey there! So this is yet another side project of a Java game.
 A local 2-player, wave-survival game built in pure Java (Swing/Java2D — **no
 external libraries**, so there's nothing to download or configure;
 `javac`/`java` from any JDK 17+ is enough).
@@ -306,7 +305,7 @@ Max HP (see above), Lucky Strike stacks its own crit chance onto the
 Critical perk (sword swings only), and Arrow Speed boosts both projectile
 velocity and the knockback it deals.
 
-## Not yet built (explicitly marked "coming soon" per your notes)
+## Not yet built (explicitly marked "coming soon")
 
 Potion of Experience. Armor, the upgrade-perks shop, and enchanting are now
 all implemented (see the sections above).
