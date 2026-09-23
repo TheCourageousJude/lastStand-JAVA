@@ -1,0 +1,27 @@
+# Compiled class files
+*.class
+out/
+out17/
+bin/
+
+# Packaged jars/artifacts (rebuild these from source instead of committing them)
+*.jar
+*.war
+
+# jpackage build artifacts
+appdist/
+jarinput/
+.jpackage-input/
+dist/
+
+# IDE files
+.idea/
+*.iml
+.vscode/
+.classpath
+.project
+.settings/
+
+# OS junk
+.DS_Store
+Thumbs.db
