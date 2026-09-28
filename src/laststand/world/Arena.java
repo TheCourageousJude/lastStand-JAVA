@@ -33,6 +33,7 @@ public class Arena {
         this.centerCol = cols / 2;
         this.centerRow = rows / 2;
         generateCross();
+        generateDecorations();
         createPortals();
     }
 
@@ -48,6 +49,24 @@ public class Arena {
                 boolean inVerticalArm = Math.abs(c - centerCol) <= half;
                 boolean inHorizontalArm = Math.abs(r - centerRow) <= half;
                 grid[c][r] = (inVerticalArm || inHorizontalArm) ? TileType.PATH : TileType.OBSTACLE;
+            }
+        }
+    }
+
+    // Which obstacle tiles get a decoration doodle (grass tuft / cactus) drawn on top -- rolled
+    // ONCE at generation time and stored, not re-rolled every frame, so a decorated tile stays
+    // decorated (no flicker) as the camera pans past it. Collision is unaffected either way --
+    // decoration is purely visual, checked nowhere in moveWithCollision()/isObstacleAtWorld().
+    private static final double DECORATION_CHANCE = 0.05; // "5% chance on each affected tile"
+    private boolean[][] decorated;
+
+    private void generateDecorations() {
+        decorated = new boolean[grid.length][grid[0].length];
+        for (int c = 0; c < grid.length; c++) {
+            for (int r = 0; r < grid[0].length; r++) {
+                if (grid[c][r] == TileType.OBSTACLE) {
+                    decorated[c][r] = rng.nextDouble() < DECORATION_CHANCE;
+                }
             }
         }
     }
@@ -135,36 +154,90 @@ public class Arena {
         int endR = Math.min(grid[0].length - 1, (camY + viewportH) / tile + 1);
 
         // Antialiasing blurs the edges of adjacent same-size fillRects, which reads as thin
-        // seam "lines" between tiles -- turn it off for this flat, blocky tile pass only.
+        // seam "lines" between tiles -- turn it off for this flat tile-fill pass only. Obstacles
+        // are a flat single-color fill now (no bevel/border -- that was the "blocky" look this
+        // replaced); the rare decoration doodle is a separate pass below, with AA back on.
         Object oldHint = g.getRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING);
         g.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING, java.awt.RenderingHints.VALUE_ANTIALIAS_OFF);
 
         for (int c = startC; c <= endC; c++) {
             for (int r = startR; r <= endR; r++) {
                 int tx = c * tile - camX, ty = r * tile - camY;
-                if (grid[c][r] == TileType.OBSTACLE) {
-                    g.setColor(theme.obstacleColor);
-                    g.fillRect(tx, ty, tile, tile);
-                    // simple bevel shading (light from top-left) so walls read as raised blocks
-                    // from the bird's-eye view instead of flat tiles with a border line
-                    g.setColor(theme.obstacleColor.brighter());
-                    g.fillRect(tx, ty, tile, 3);
-                    g.fillRect(tx, ty, 3, tile);
-                    g.setColor(theme.obstacleColor.darker());
-                    g.fillRect(tx, ty + tile - 4, tile, 4);
-                    g.fillRect(tx + tile - 4, ty, 4, tile);
-                } else {
-                    g.setColor(theme.pathColor);
-                    g.fillRect(tx, ty, tile, tile);
-                }
+                g.setColor(grid[c][r] == TileType.OBSTACLE ? theme.obstacleColor : theme.pathColor);
+                g.fillRect(tx, ty, tile, tile);
             }
         }
 
         g.setRenderingHint(java.awt.RenderingHints.KEY_ANTIALIASING,
                 oldHint != null ? oldHint : java.awt.RenderingHints.VALUE_ANTIALIAS_DEFAULT);
 
+        // Decoration pass: the ~5% of obstacle tiles rolled in generateDecorations() get a small
+        // grass-tuft (Forest) or cactus (Desert) doodle so the terrain doesn't read as a uniform
+        // grid. AA is back on here since these are small organic line shapes, not edge-to-edge
+        // fills, so there's no seam risk.
+        for (int c = startC; c <= endC; c++) {
+            for (int r = startR; r <= endR; r++) {
+                if (grid[c][r] == TileType.OBSTACLE && decorated[c][r]) {
+                    int tx = c * tile - camX, ty = r * tile - camY;
+                    drawDecoration(g, tx, ty, tile, c, r);
+                }
+            }
+        }
+
         drawSentry(g, camX, camY);
         for (Portal p : portals) p.draw(g, camX, camY);
+    }
+
+    /** Draws one tile's decoration doodle. Seeded off the tile's WORLD (c, r) indices, not its
+     *  on-screen position, so the exact same shape/jitter is redrawn every frame regardless of
+     *  camera position -- using screen coords for the seed would make it "swim" as you pan. */
+    private void drawDecoration(Graphics2D g, int tx, int ty, int tile, int c, int r) {
+        Random seeded = new Random(c * 92821L + r * 68917L);
+        g.setColor(theme.decorationColor);
+        java.awt.Stroke oldStroke = g.getStroke();
+        g.setStroke(new java.awt.BasicStroke(2.2f, java.awt.BasicStroke.CAP_ROUND, java.awt.BasicStroke.JOIN_ROUND));
+        if (theme == ArenaTheme.DESERT) {
+            drawCactus(g, tx, ty, tile, seeded);
+        } else {
+            drawGrassTuft(g, tx, ty, tile, seeded);
+        }
+        g.setStroke(oldStroke);
+    }
+
+    /** A couple of short grass-blade strokes near the tile's base, jittered per tile so a patch
+     *  of decorated tiles doesn't all look identical -- loosely matches the reference sketch. */
+    private void drawGrassTuft(Graphics2D g, int tx, int ty, int tile, Random seeded) {
+        int baseY = ty + tile - 3 - seeded.nextInt(5);
+        int blades = 2 + seeded.nextInt(2); // 2-3 blades
+        for (int i = 0; i < blades; i++) {
+            int bx = tx + tile / 6 + seeded.nextInt(tile - tile / 3);
+            int h = tile / 3 + seeded.nextInt(tile / 4);
+            int kinkX = bx + (seeded.nextBoolean() ? 1 : -1) * (2 + seeded.nextInt(4));
+            int kinkY = baseY - h / 2;
+            g.drawLine(bx, baseY, kinkX, kinkY);
+            int tipX = kinkX + (seeded.nextBoolean() ? 1 : -1) * (2 + seeded.nextInt(3));
+            g.drawLine(kinkX, kinkY, tipX, baseY - h);
+        }
+    }
+
+    /** A small saguaro-style cactus: a vertical stem with 1-2 side arms, matching the reference
+     *  sketch. Jittered per tile for a bit of variety across a patch of decorated tiles. */
+    private void drawCactus(Graphics2D g, int tx, int ty, int tile, Random seeded) {
+        int cx = tx + tile / 2 + seeded.nextInt(7) - 3;
+        int baseY = ty + tile - 3;
+        int stemH = tile / 2 + seeded.nextInt(tile / 4);
+        int topY = baseY - stemH;
+        g.drawLine(cx, baseY, cx, topY); // main stem
+
+        int leftY = baseY - stemH / 3;
+        g.drawLine(cx, leftY, cx - tile / 4, leftY);
+        g.drawLine(cx - tile / 4, leftY, cx - tile / 4, leftY - tile / 4);
+
+        if (seeded.nextDouble() < 0.7) { // right arm only sometimes, per the sketch's uneven look
+            int rightY = baseY - (int) (stemH * 0.6);
+            g.drawLine(cx, rightY, cx + tile / 5, rightY);
+            g.drawLine(cx + tile / 5, rightY, cx + tile / 5, rightY - tile / 5);
+        }
     }
 
     private void drawSentry(Graphics2D g, int camX, int camY) {

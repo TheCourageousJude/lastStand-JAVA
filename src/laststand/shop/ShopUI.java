@@ -54,7 +54,7 @@ public class ShopUI {
                 ? "P1: W/S+SPACE for the shop list, 1-4 for upgrades"
                 : "W/S+SPACE for the shop list, 1-4 for upgrades";
         String hintLine2 = p2Active
-                ? "P2: Up/Down+ENTER for the shop list, 0/9/8/7 for upgrades   |   E to close"
+                ? "P2: Up/Down+ENTER for the shop list, 0/9/8/7 for upgrades   |   E/P to close"
                 : "E to close";
         g.drawString(hintLine1, px + 20, py + panelH - 30);
         g.drawString(hintLine2, px + 20, py + panelH - 14);

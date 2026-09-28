@@ -11,15 +11,17 @@ import java.awt.Color;
  *
  * Rework pass: Melee Power -> Recovery (on-kill sustain instead of damage),
  * Toughen -> Grow (per-wave HP growth instead of a one-time %), Dodge ->
- * Reforged (per-wave flat damage instead of evasion). Armored also now gets
- * a stacking +1 Defense per boss kill on top of its normal levels.
+ * Reforged (per-wave flat damage instead of evasion), Innate Prowess ->
+ * Preserved Power (dynamic bonus off currently-held LVL instead of a flat
+ * per-level number). Armored also now gets a stacking +1 Defense per boss
+ * kill on top of its normal levels.
  */
 public enum UpgradeType {
     SPEEDY(new Color(90, 200, 90)) {
         @Override public String effectFor(PlayerClass cls) { return "+10% move speed / level"; }
     },
     ARMORED(new Color(120, 90, 60)) {
-        @Override public String effectFor(PlayerClass cls) { return "+2 Defense / level, plus +1 Defense per boss defeated (stacks forever)"; }
+        @Override public String effectFor(PlayerClass cls) { return "+1 Defense / level, plus +1 Defense per boss defeated (stacks forever)"; }
     },
     RECOVERY(new Color(230, 210, 60)) {
         @Override public String effectFor(PlayerClass cls) {
@@ -30,13 +32,13 @@ public enum UpgradeType {
     CRITICAL(new Color(220, 60, 60)) {
         @Override public String effectFor(PlayerClass cls) { return "+3% chance to deal double damage / level"; }
     },
-    INNATE_PROWESS(new Color(230, 140, 40)) {
+    PRESERVED_POWER(new Color(230, 140, 40)) {
         @Override public String effectFor(PlayerClass cls) {
-            return cls == PlayerClass.TANK ? "+10 melee damage / level" : "+20 arrow damage / level";
+            return "Grants a minor increase to stats the higher your EXP level";
         }
     },
     DARK_SORCERY(new Color(140, 90, 210)) {
-        @Override public String effectFor(PlayerClass cls) { return "+1-3 dark orbs per wave, per level (scales to lvl*1..lvl*3)"; }
+        @Override public String effectFor(PlayerClass cls) { return "+1-4 dark orbs per wave, per level (scales to lvl*1..lvl*4)"; }
     },
     SILVER_BANK(new Color(185, 185, 195)) {
         @Override public String effectFor(PlayerClass cls) { return "+1-2 silver orbs per wave, per level (scales to lvl*1..lvl*2)"; }

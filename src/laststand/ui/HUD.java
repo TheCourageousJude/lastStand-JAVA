@@ -15,13 +15,13 @@ import java.util.List;
 
 public class HUD {
 
-    public void draw(Graphics2D g, List<Player> players, WaveManager waveManager, Wallet wallet1, Wallet wallet2) {
+    public void draw(Graphics2D g, List<Player> players, WaveManager waveManager, Wallet wallet1, Wallet wallet2, long nowMs) {
         g.setColor(new Color(25, 25, 25));
         g.fillRect(0, 0, Constants.SCREEN_WIDTH, Constants.HUD_HEIGHT);
 
         for (Player p : players) {
-            if (p.playerNumber == 1) drawPlayerPanel(g, p, 10, wallet1);
-            else drawPlayerPanel(g, p, Constants.SCREEN_WIDTH - 260, wallet2);
+            if (p.playerNumber == 1) drawPlayerPanel(g, p, 10, wallet1, nowMs);
+            else drawPlayerPanel(g, p, Constants.SCREEN_WIDTH - 260, wallet2, nowMs);
         }
 
         g.setFont(new Font("SansSerif", Font.BOLD, 20));
@@ -36,7 +36,7 @@ public class HUD {
         g.drawString(hint, (Constants.SCREEN_WIDTH - g.getFontMetrics().stringWidth(hint)) / 2, 52);
     }
 
-    private void drawPlayerPanel(Graphics2D g, Player p, int panelX, Wallet wallet) {
+    private void drawPlayerPanel(Graphics2D g, Player p, int panelX, Wallet wallet, long nowMs) {
         int barW = 250, barH = 14;
         int barY = 26;
 
@@ -80,7 +80,7 @@ public class HUD {
         drawOrb(g, panelX + 75, orbY, new Color(190, 190, 200), wallet.silverOrbs);
         drawOrb(g, panelX + 150, orbY, new Color(235, 210, 60), wallet.yellowOrbs);
 
-        drawHotbar(g, p, panelX, orbY + 18);
+        drawHotbar(g, p, panelX, orbY + 18, nowMs);
     }
 
     private void drawOrb(Graphics2D g, int x, int y, Color color, int count) {
@@ -96,21 +96,21 @@ public class HUD {
     private static final String[] P1_KEYS = {"1", "2", "3", "4"};
     private static final String[] P2_KEYS = {"0", "9", "8", "7"};
 
-    private void drawHotbar(Graphics2D g, Player p, int panelX, int y) {
+    private void drawHotbar(Graphics2D g, Player p, int panelX, int y, long nowMs) {
         int slotSize = 26, gap = 6;
         String[] keys = p.playerNumber == 1 ? P1_KEYS : P2_KEYS;
 
         for (int i = 0; i < 4; i++) {
             int sx = panelX + i * (slotSize + gap);
             boolean selected = p.selectedSlot == i;
-            boolean usable = isSlotUsable(p, i);
+            boolean usable = isSlotUsable(p, i, nowMs);
 
             g.setColor(selected ? new Color(95, 90, 120) : new Color(45, 45, 45));
             g.fillRoundRect(sx, y, slotSize, slotSize, 6, 6);
             g.setColor(selected ? Color.YELLOW : Color.GRAY);
             g.drawRoundRect(sx, y, slotSize, slotSize, 6, 6);
 
-            drawSlotIcon(g, p, i, sx, y, slotSize, usable);
+            drawSlotIcon(g, p, i, sx, y, slotSize, usable, nowMs);
 
             g.setFont(new Font("SansSerif", Font.PLAIN, 9));
             g.setColor(Color.LIGHT_GRAY);
@@ -118,18 +118,18 @@ public class HUD {
         }
     }
 
-    private boolean isSlotUsable(Player p, int slot) {
+    private boolean isSlotUsable(Player p, int slot, long nowMs) {
         return switch (slot) {
             case 0 -> true;
             case 1 -> p.medicKits > 0;
-            case 2 -> p.shieldUnlocked && p.shieldCooldownRemainingMs(System.currentTimeMillis()) <= 0;
+            case 2 -> p.shieldUnlocked && p.shieldCooldownRemainingMs(nowMs) <= 0;
             case 3 -> p.playerClass == PlayerClass.RANGER;
             default -> false;
         };
     }
 
     /** Simple blocky icons: slot 0 (weapon) is colored per the owned tier, per the design doc. */
-    private void drawSlotIcon(Graphics2D g, Player p, int slot, int sx, int sy, int size, boolean usable) {
+    private void drawSlotIcon(Graphics2D g, Player p, int slot, int sx, int sy, int size, boolean usable, long nowMs) {
         int cx = sx + size / 2, cy = sy + size / 2;
         Color dim = new Color(90, 90, 90);
         switch (slot) {
@@ -154,7 +154,7 @@ public class HUD {
                     g.setFont(new Font("SansSerif", Font.BOLD, 10));
                     g.drawString("?", sx + size / 2 - 3, sy + size - 6);
                 } else {
-                    long remain = p.shieldCooldownRemainingMs(System.currentTimeMillis());
+                    long remain = p.shieldCooldownRemainingMs(nowMs);
                     if (remain > 0) {
                         drawCount(g, sx, sy, size, (int) Math.ceil(remain / 1000.0));
                     }

@@ -24,7 +24,7 @@ public class Enemy extends Entity {
     private static final int HP_PER_WAVE = 10; // was +5 -- "this is gonna be tough"
     private static final double SPEED_INCREASE_PER_5_WAVES = 0.10; // was 0.15 -- see also EnemyType's doc comment
 
-    public Enemy(EnemyType type, boolean boss, double x, double y, int waveNumber) {
+    public Enemy(EnemyType type, boolean boss, double x, double y, int waveNumber, int globalBossDamageBonus) {
         super(x, y, boss ? 46 : 30, scaledHealth(type, boss, waveNumber), type.color);
         this.type = type;
         this.boss = boss;
@@ -32,7 +32,10 @@ public class Enemy extends Entity {
         int milestones = (waveNumber - 1) / 5; // one "level" every 5 waves cleared
         double speedMult = (boss ? BOSS_SPEED_MULT : 1.0) * (1.0 + SPEED_INCREASE_PER_5_WAVES * milestones);
         this.speed = type.baseSpeed * speedMult;
-        int scaledDamage = type.baseDamage + type.dmgIncrement * (waveNumber - 1);
+        // "+2 dmg per wave was tragic" -- replaced with a flat, game-wide +4 per boss defeated
+        // (tracked in WaveManager.bossDamageBonus, incremented in GamePanel.onEnemyKilled()) so
+        // damage only ramps up in response to actual boss kills, not just time/waves passing.
+        int scaledDamage = type.baseDamage + globalBossDamageBonus;
         this.damage = (int) Math.round(scaledDamage * (boss ? BOSS_DAMAGE_MULT : 1.0));
         this.range = type.range;
         this.cooldownMs = type.cooldownMs;
@@ -74,7 +77,7 @@ public class Enemy extends Entity {
                 lastAttackAt = nowMs;
                 if (type.attackType == AttackType.MELEE) {
                     // Shield (if active) is checked inside takeDamage() itself now, works for any damage source
-                    target.takeDamage(damage, centerX(), centerY(), 10.0); // Dodge + Armored applied inside
+                    target.takeDamage(damage, centerX(), centerY(), 10.0, nowMs); // Dodge + Armored applied inside
                 } else {
                     double ux = dist > 0.001 ? dx / dist : 0;
                     double uy = dist > 0.001 ? dy / dist : -1;

@@ -129,17 +129,41 @@ public class Player extends Entity {
     public boolean trySpendLevel(int amount) {
         if (level < amount) return false;
         level -= amount;
+        refreshPreservedPowerBonus(); // level just went down -- Preserved Power's HP scales with it
         return true;
     }
 
     // "Spinning animation for 1 second" -- the roll happens immediately (so it's deterministic
     // and can't be re-triggered mid-spin), but the UI hides the result and shows a spin animation
-    // until this timestamp.
+    // until this timestamp. Deliberately stamped and checked against REAL wall-clock time, not
+    // the paused-aware world clock threaded everywhere else: this is a short, self-contained UI
+    // animation for the menu the player is actively looking at, and pausing it via the same clock
+    // that "pause during shop/enchant" freezes would be self-referential -- opening the very menu
+    // that spins the wheel would freeze the clock the wheel needs to finish spinning, so with
+    // pausing ON the animation would never complete. It always plays out in real time instead.
     public long spinAnimUntil = 0;
     public static final long SPIN_ANIM_MS = 1000;
 
-    public boolean isSpinning(long nowMs) {
-        return nowMs < spinAnimUntil;
+    public boolean isSpinning() {
+        return System.currentTimeMillis() < spinAnimUntil;
+    }
+
+    // Which category's animation is currently running, and what that category held right before
+    // this spin overwrote it -- lets the UI keep showing the OLD equipped enchant for the full
+    // animation instead of spoiling the new roll the instant it's rolled. Null/empty when idle.
+    public EnchantCategory spinningCategory = null;
+    public Map<EnchantType, Integer> preSpinSnapshot = null;
+
+    // The 1-LVL "Default" spin has no real cost gate (1 LVL is trivial to earn), so it gets its
+    // own per-wave usage cap instead -- refilled to the max whenever a wave is cleared (see
+    // GamePanel.awardWaveCompletionOrbs()). Priced spins (30/90/270/450) are uncapped; their LVL
+    // cost is the only limiter.
+    public static final int DEFAULT_SPINS_PER_WAVE = 10;
+    public int defaultSpinsUsedThisWave = 0;
+
+    /** Called whenever a wave is cleared -- refills the Default spin's per-wave allowance. */
+    public void resetDefaultSpinsForNewWave() {
+        defaultSpinsUsedThisWave = 0;
     }
 
     /**
@@ -150,8 +174,19 @@ public class Player extends Entity {
      * with whatever was equipped before). Starts the 1-second spin animation on success.
      */
     public boolean trySpin(EnchantSpinOption option, long nowMs) {
-        if (isSpinning(nowMs)) return false; // can't spin again mid-animation
+        if (isSpinning()) return false; // can't spin again mid-animation
+        if (option == EnchantSpinOption.DEFAULT && defaultSpinsUsedThisWave >= DEFAULT_SPINS_PER_WAVE) {
+            return false; // out of Default spins for this wave -- clear a wave to refill
+        }
         if (!trySpendLevel(option.levelCost)) return false;
+        if (option == EnchantSpinOption.DEFAULT) defaultSpinsUsedThisWave++;
+
+        // Snapshot what this category held BEFORE this roll overwrites it, so the UI can keep
+        // showing the old enchant for the full animation instead of revealing the new one early.
+        Map<EnchantType, Integer> previous = enchants.get(enchantCategory);
+        preSpinSnapshot = previous == null ? null : new EnumMap<>(previous);
+        spinningCategory = enchantCategory;
+
         int tier = option.rollTier(enchantRng);
         int[] partition = randomPartition(tier);
 
@@ -167,7 +202,7 @@ public class Player extends Entity {
         lastSpinResult = result;
         lastSpinOption = option;
         lastSpinLandingFraction = enchantRng.nextDouble();
-        spinAnimUntil = nowMs + SPIN_ANIM_MS;
+        spinAnimUntil = System.currentTimeMillis() + SPIN_ANIM_MS;
 
         if (enchantCategory.isArmorPiece()) {
             // Re-derive HP Boost's contribution to maxHealth -- covers gaining, increasing,
@@ -217,13 +252,21 @@ public class Player extends Entity {
     public int level = 0;
     public static final int EXP_CAP = 50; // "50/50" -- much quicker leveling so LVL 20 (reroll's gate) is reachable
     public static final int REROLL_LEVEL_REQUIREMENT = 20; // player LVL needed to reroll upgrade offers
+    public static final int MAX_LEVEL = 500; // "no exceeding, the bar visually looks full" once hit
 
     public void addExp(int amount) {
-        exp += amount;
-        while (exp >= EXP_CAP) {
-            exp -= EXP_CAP;
-            level++;
+        if (level < MAX_LEVEL) {
+            exp += amount;
+            while (exp >= EXP_CAP && level < MAX_LEVEL) {
+                exp -= EXP_CAP;
+                level++;
+            }
         }
+        if (level >= MAX_LEVEL) {
+            level = MAX_LEVEL;
+            exp = EXP_CAP; // sit visually full forever, instead of cycling 0..49 for no further LVL
+        }
+        refreshPreservedPowerBonus(); // level may have just gone up -- Preserved Power's HP scales with it
     }
 
     // Upgrade shop: 9 perks, each levels independently up to UpgradeType.MAX_LEVEL,
@@ -250,11 +293,13 @@ public class Player extends Entity {
         if (!wallet.trySpend(Currency.YELLOW, 1)) return false;
         upgradeLevels.put(type, current + 1);
         rerollPerks(); // buying one slot re-randomizes all 3 -- "give way for other upgrades"
+        refreshPreservedPowerBonus(); // in case this purchase was Preserved Power itself
         return true;
     }
 
-    // "Armored... +1 Defense per boss defeated (stackable)" -- both players get credit for a
-    // boss kill (matching the shared yellow-orb rule), uncapped, on top of Armored's normal levels.
+    // "Armored... +1 Defense per boss defeated (stackable)" -- only accrues for players who've
+    // bought at least 1 level of Armored (see GamePanel.onEnemyKilled()); a player with no
+    // upgrade never gains Defense just from a boss dying nearby.
     public int bossDefenseStacks = 0;
 
     // "Reforged... +1 damage per wave completed, per level (stackable)" -- a flat, ever-growing
@@ -263,29 +308,61 @@ public class Player extends Entity {
 
     // HP Boost folds straight into Max HP now, instead of a hidden absorb-shield that never
     // showed up on the bar. baseMaxHealth is the "real" max (class base + permanent Grow gains,
-    // never includes HP Boost); maxHealth is always baseMaxHealth + the current HP Boost bonus,
-    // recomputed from scratch whenever either one changes -- see recomputeMaxHealth().
+    // never includes HP Boost or Preserved Power); maxHealth is always baseMaxHealth + hpBoostBonus
+    // + preservedPowerHPBonus, recomputed from scratch whenever any of those change -- see
+    // recomputeMaxHealth().
     private int baseMaxHealth;
     private int hpBoostBonus = 0;
+    private int preservedPowerHPBonus = 0;
+
+    /**
+     * Preserved Power rework -- the old "every 4 LVL" version scaled unbounded and got "too broken".
+     * Now two separate, capped tracks based on fixed LVL milestones instead of a flat divisor:
+     *  - HP:     +2 Max HP per level at each of 50 milestones (5,15,25,...,495) -- caps at +100/level
+     *  - Damage: +1 damage per level at each of 50 milestones (10,20,30,...,500) -- caps at +50/level
+     * Both scale by how many levels of the perk itself are purchased (up to UpgradeType.MAX_LEVEL),
+     * so the absolute ceiling is +2,000 Max HP / +1,000 damage at Preserved Power level 20 and LVL
+     * 500 (the new hard cap on Player.level). Both still rise and fall live as the player's LVL
+     * balance changes -- gaining LVL raises them, spending LVL on enchant spins lowers them.
+     */
+    private static int preservedPowerHpMilestones(int lvl) {
+        if (lvl < 5) return 0;
+        return (Math.min(lvl, 495) - 5) / 10 + 1;
+    }
+
+    private static int preservedPowerDmgMilestones(int lvl) {
+        return Math.min(lvl, 500) / 10;
+    }
+
+    private int preservedPowerDamageBonus() {
+        return preservedPowerDmgMilestones(level) * upgradeLevel(UpgradeType.PRESERVED_POWER);
+    }
+
+    /** Re-derives preservedPowerHPBonus from the current LVL balance -- called from addExp(),
+     *  trySpendLevel(), and tryBuyPerk() (anything that can change level or the perk's own level). */
+    private void refreshPreservedPowerBonus() {
+        preservedPowerHPBonus = 2 * preservedPowerHpMilestones(level) * upgradeLevel(UpgradeType.PRESERVED_POWER);
+        recomputeMaxHealth();
+    }
 
     private static final int MELEE_DAMAGE_CAP = 80; // "until it caps at 80"
 
-    /** Base weapon damage (tier-scaled) + Tank's flat Innate Prowess + Sword Damage enchant +
+    /** Base weapon damage (tier-scaled) + Preserved Power's dynamic bonus + Sword Damage enchant +
      *  Reforged, capped at 80. */
     public int swordDamage() {
         int base = effectiveDamage();
-        int bonus = 10 * upgradeLevel(UpgradeType.INNATE_PROWESS)
+        int bonus = preservedPowerDamageBonus()
                 + (int) Math.round(enchantValue(EnchantType.SWORD_DAMAGE))
                 + reforgedDamageBonus;
         return Math.min(MELEE_DAMAGE_CAP, base + bonus);
     }
 
-    /** Base weapon damage (tier-scaled) + Ranger's flat Innate Prowess (now +20/level) + Arrow
-     *  Damage enchant + Reforged. Critical's distance bonus is applied separately at impact, in
-     *  GamePanel, since it needs travel distance. */
+    /** Base weapon damage (tier-scaled) + Preserved Power's dynamic bonus + Arrow Damage enchant +
+     *  Reforged. Critical's distance bonus is applied separately at impact, in GamePanel, since it
+     *  needs travel distance. */
     public int arrowDamage() {
         int base = effectiveDamage();
-        int bonus = 20 * upgradeLevel(UpgradeType.INNATE_PROWESS)
+        int bonus = preservedPowerDamageBonus()
                 + (int) Math.round(enchantValue(EnchantType.ARROW_DAMAGE))
                 + reforgedDamageBonus;
         return base + bonus;
@@ -309,7 +386,7 @@ public class Player extends Entity {
      * with the current weapon & armor, and the upgrades they have").
      */
     public int totalDefense() {
-        int base = 2 * upgradeLevel(UpgradeType.ARMORED) + bossDefenseStacks + armorDefense();
+        int base = upgradeLevel(UpgradeType.ARMORED) + bossDefenseStacks + armorDefense(); // was 2x/level
         double protectionPercent = enchantValue(EnchantType.PROTECTION) / 100.0; // summed across all 3 pieces
         return (int) Math.round(base * (1 + protectionPercent));
     }
@@ -319,9 +396,9 @@ public class Player extends Entity {
      * otherwise Defense reduces the hit (floor of 1) and comes straight off real HP -- HP Boost
      * no longer needs special handling here since its bonus already lives inside maxHealth.
      */
-    public boolean takeDamage(int rawAmount, double fromX, double fromY, double knockbackStrength) {
+    public boolean takeDamage(int rawAmount, double fromX, double fromY, double knockbackStrength, long nowMs) {
         if (!alive) return false;
-        if (isShieldActive(System.currentTimeMillis())) {
+        if (isShieldActive(nowMs)) {
             return false; // Shield: "all damage nullified" and no knockback, contact or projectile
         }
         int finalDamage = Math.max(1, rawAmount - totalDefense()); // Attack - Defense, floor of 1
@@ -334,7 +411,7 @@ public class Player extends Entity {
      *  HP down if it now exceeds the new max (e.g. HP Boost was just rolled away). Current HP is
      *  never raised here -- only ever clamped down, or left untouched. */
     private void recomputeMaxHealth() {
-        maxHealth = baseMaxHealth + hpBoostBonus;
+        maxHealth = baseMaxHealth + hpBoostBonus + preservedPowerHPBonus;
         if (health > maxHealth) health = maxHealth;
     }
 
@@ -349,6 +426,18 @@ public class Player extends Entity {
         double hpBoostPercent = enchantValue(EnchantType.HP_BOOST); // summed across all 3 armor pieces
         hpBoostBonus = (int) Math.round(baseMaxHealth * hpBoostPercent / 100.0);
         recomputeMaxHealth();
+    }
+
+    /**
+     * Re-derives every dynamic bonus (HP Boost's Max HP contribution, Preserved Power's Max HP
+     * contribution) from scratch off whatever level/upgradeLevels/enchants currently hold. Both
+     * are normally kept in sync incrementally as those change during play; this is for restoring
+     * a save, where level/upgrades/enchants get set directly rather than through the normal
+     * gain/spend/purchase paths that would otherwise trigger the refresh automatically.
+     */
+    public void recomputeAllDerivedStats() {
+        refreshPreservedPowerBonus();
+        refreshHpBoostBonus();
     }
 
     /** Grow's per-wave permanent Max HP gain -- adds to the "real" base (so HP Boost's percentage
@@ -469,11 +558,11 @@ public class Player extends Entity {
         return playerClass == PlayerClass.TANK ? weaponTier.swordDamage : weaponTier.bowDamage;
     }
 
-    public void useMedicKit() {
+    public void useMedicKit(long nowMs) {
         if (medicKits > 0 && alive && health < maxHealth) {
             medicKits--;
             health = Math.min(maxHealth, health + MEDIC_KIT_HEAL);
-            lastHealFlashAt = System.currentTimeMillis();
+            lastHealFlashAt = nowMs; // must share the caller's paused-aware clock, not wall time
         }
     }
 
@@ -505,6 +594,7 @@ public class Player extends Entity {
         this.y = y;
         this.baseMaxHealth = playerClass.maxHealth;
         this.hpBoostBonus = 0;
+        this.preservedPowerHPBonus = 0;
         this.maxHealth = playerClass.maxHealth;
         this.health = playerClass.maxHealth;
         this.ammo = playerClass.startingAmmo;

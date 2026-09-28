@@ -1,4 +1,4 @@
-# Last Stand — v1.0.0
+# Last Stand — v1.0.4
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in this release.
 
@@ -27,9 +27,11 @@ just open the folder in IntelliJ/VS Code and hit Run on `Main.java`.)
 | Select hotbar slot 2 (medic kit) | 2            | 9                |
 | Select hotbar slot 3 (shield) | 3               | 8                |
 | Select hotbar slot 4 (secondary — Ranger's manual dagger) | 4 | 7 |
-| Open shop, or enchant if near the Enchanting Center | E (either player) | E |
-| Menu confirm                  | SPACE           | ENTER            |
-| Back / quit to menu           | ESC             | —                |
+| Open shop, or enchant if near the Enchanting Center | E | P |
+| Enchant wheel spins (Default / 30 / 90 / 270 / 450 tier, cheapest to priciest) | 1 2 3 4 5 | 7 8 9 0 - |
+| Menu confirm                  | SPACE or ENTER (either works, either player) |
+| Menu navigate                 | W/S or Up/Down (either works, either player) |
+| Open/close the Settings menu (was instant quit-to-menu — now opens How to Play / Back to Main Menu, the latter behind a Yes/No confirm) | ESC | ESC |
 
 **Inventory hotbar**: pressing a number selects that slot (shown highlighted in
 the HUD); your next attack-key press *uses* whatever's selected, then
@@ -38,13 +40,32 @@ switch back before you can attack again. Slot 1 is just your normal attack.
 Slot 4 only does anything for the Ranger (a manual melee swing with the dagger,
 even with arrows in reserve) — it's blank/unused for the Tank.
 
-**In the shop** (pauses the game): P1 navigates with W/S and buys with SPACE;
+**In the shop and while enchanting**: whether either one pauses the rest of
+the game (enemies, wave timer, cooldowns — all of it, via a paused-aware
+virtual clock so nothing silently keeps ticking in the background) is
+controlled by the "Pause game during shop/enchant/settings" option (off by
+default). Either way, the player(s) looking at the menu are always fully
+immobilized while it's open, even with pausing OFF — only enchanting locks
+just the one player enchanting; the shop and the Settings menu are shared,
+screen-covering modals, so they lock both players at once while enemies (if
+unpaused) keep coming. P1 navigates the shop with W/S and buys with SPACE;
 P2 navigates with Up/Down and buys with ENTER — each player can only spend
 their own wallet, on their own side of the panel.
 
 Main menu: W/S to move the highlight, SPACE to confirm. One item toggles
 Player 2 on/off. Character select: A/D (P1) or Left/Right (P2) to switch
 between Tank and Ranger, then lock in.
+
+**Saving.** ESC → **Save Game** writes one save slot (`laststand_save.dat`,
+next to wherever the game runs from); main menu → **Load Save** restores it
+(after a Yes/No confirmation showing what's in it). A save holds both
+players' class, LVL/EXP, weapon/armor tier, upgrades, enchants, medic kits,
+shield unlock, wallets, arena theme, the pause setting, and wave progress --
+but *not* position, current HP, or live enemies: loading always resumes at
+the start of the saved wave at full health. To discourage save-scumming
+(reloading to undo a bad enchant roll or a risky fight), a save is a
+**one-time checkpoint** -- loading deletes it -- and **Save Game is greyed out
+for 5 waves after a load**. Saves from older versions may be unreadable.
 
 **In the shop's upgrade row**: 1-4 (P1) / 0,9,8,7 (P2) directly buy that slot's
 offered perk for 1 yellow orb (no separate confirm needed — the shop's already
@@ -84,11 +105,11 @@ place of the reroll line until then.
 | Perk | Effect |
 |---|---|
 | Speedy | +10% move speed / level |
-| Armored | +2 Defense / level, **plus +1 Defense per boss defeated** (uncapped, stacks forever, both players get credit) |
+| Armored | +1 Defense / level, **plus +1 Defense per boss defeated** (only for players who own at least 1 level of Armored; uncapped, stacks forever) |
 | Recovery | Tank: +2 HP recovered per enemy slain, per level. Ranger: +1 arrow recovered per enemy slain, per level |
 | Critical | +3% chance to double a hit / level -- same mechanic for both classes |
-| Innate Prowess | Tank: +10 melee damage / level. Ranger: +20 arrow damage / level |
-| Dark Sorcery | +1-3 bonus dark orbs per wave cleared, scaling to +20-60 at level 20 |
+| Preserved Power | +2 Max HP per 5-ish LVL held (milestones at 5,15,25,...,495) and +1 damage per 10 LVL held (milestones at 10,20,...,500), per level -- rises/falls live as LVL is gained or spent. Capped at +2,000 Max HP / +1,000 damage (level 20, LVL 500) |
+| Dark Sorcery | +1-4 bonus dark orbs per wave cleared, scaling to +20-80 at level 20 |
 | Silver Bank | +1-2 bonus silver orbs per wave cleared, scaling to +20-40 at level 20 |
 | Grow | +2 max HP per wave cleared, per level (uncapped, stacks forever, heals the gain too) |
 | Reforged | +1 flat damage per wave cleared, per level (uncapped, stacks forever, applies to every attack) |
@@ -111,7 +132,7 @@ always get per wave.
 
 Melee Power, Toughen, and Dodge were reworked into Recovery, Grow, and
 Reforged respectively -- Melee Power's old flat damage bonus is gone (that
-role now belongs to weapon tiers and Innate Prowess), Toughen's one-time %
+role now belongs to weapon tiers and Preserved Power), Toughen's one-time %
 HP grant became Grow's recurring per-wave HP gain, and Dodge's evasion chance
 became Reforged's recurring per-wave flat damage bonus. Critical was
 originally a distance-scaled bonus for the Ranger, but it barely moved the
@@ -121,13 +142,16 @@ Tank's version, for both classes.
 ## What's implemented
 
 - Main menu → character select (Tank/Ranger, duplicates allowed) → play loop → game over
-- Cross-shaped arena: obstacle corners with bevel/shading (no flat grid lines),
-  a portal at the end of each of the 4 arms, a center **sentry** block + dashed
+- Cross-shaped arena (now 50×45 tiles): flat single-color obstacle tiles (no
+  bevel/border — that was reworked away for looking too "blocky"), ~5% of
+  which get a small grass-tuft (Forest) or cactus (Desert) decoration doodle,
+  rolled once at generation so it doesn't flicker as the camera pans. A
+  portal at the end of each of the 4 arms, a center **sentry** block + dashed
   **trade zone** ring. Forest/Desert themes, toggle with T from Options
 - EXP bar under each player's HP bar, capped at 50 ("50/50") per level -- a
-  full bar rolls over into +1 LVL rather than just capping there. LVL gates
-  the upgrade reroll (needs LVL 20) and is otherwise banked for the
-  not-yet-built enchantment system
+  full bar rolls over into +1 LVL rather than just capping there, up to a
+  hard cap of LVL 500 (the bar just sits full past that point). LVL gates
+  the upgrade reroll (needs LVL 20) and is spent on enchant wheel spins
 - Bottom-of-screen buff bar (P1 bottom-left, P2 bottom-right) showing all 9
   upgrade levels at a glance, same quantity-badge style as the inventory hotbar
 - Beginner wave curriculum for waves 1-15 (fixed enemy pools per your spec),
@@ -203,7 +227,7 @@ Tank's version, for both classes.
   (Wooden) / 105 / 130 / 165 / 220 (Diamond), exactly as specified. Both
   classes are 100 max HP.
 - **Ranger's dagger damage** is now 33% of the Ranger's current *effective*
-  bow damage (`arrowDamage()`, so it includes tier and Innate Prowess), plus
+  bow damage (`arrowDamage()`, so it includes tier and Preserved Power), plus
   Melee Power, capped at 80 — replacing the old flat 23. Flagged as a
   placeholder ahead of a possible throwable-darts rework, per your note.
 - **Shield duration** — 5 seconds of full damage/knockback immunity per
@@ -243,16 +267,22 @@ Only one player can be enchanting at a time. V/M (weapon) are shared since
 there's only ever one relevant weapon per class, but the armor-piece keys are
 kept strictly separate per player, same as the inventory hotbar convention:
 
-| Action | Key |
-|---|---|
-| Select Sword | V (Tank only) |
-| Select Bow | M (Ranger only) |
-| Select Helmet | Z (P1 only) or , comma (P2 only) |
-| Select Chestplate | X (P1 only) or . period (P2 only) |
-| Select Leggings | C (P1 only) or / slash (P2 only) |
-| SPIN (default, 1 LVL) | 1 |
-| SPIN at 30 / 90 / 270 / 450 LVL | 2 / 3 / 4 / 5 |
-| Exit (or open the shop outside the boundary) | E |
+| Action | P1 | P2 |
+|---|---|---|
+| Select Sword | V (Tank only) | V (Tank only) |
+| Select Bow | M (Ranger only) | M (Ranger only) |
+| Select Helmet | Z | , comma |
+| Select Chestplate | X | . period |
+| Select Leggings | C | / slash |
+| SPIN (default, 1 LVL, capped at 10 uses/wave — see below) | 1 | 7 |
+| SPIN at 10 / 20 / 45 / 85 LVL | 2 / 3 / 4 / 5 | 8 / 9 / 0 / - |
+| Exit (or open the shop outside the boundary) | E | P |
+
+The default 1-LVL spin is capped at 10 uses per wave per player (refills to
+10 every time a wave clears) since it otherwise has no real cost gate to
+limit spamming it. The other four prices were nerfed twice since first
+shipping (30/90/270/450 → 20/55/115/185 → the current 10/20/45/85) to make
+the pricier, better-odds tiers actually reachable.
 
 Entering the menu always starts on your one main weapon slot (Sword for
 Tank, Bow for Ranger) — pressing an armor key a **second time** (while that

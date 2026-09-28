@@ -8,14 +8,18 @@ import java.util.Random;
  * price (now paid in whole LEVELS, not fractional EXP) with its own odds for landing Tier 1-5.
  * DEFAULT matches the original 75/20/4/1/0 numbers; the rest are exactly as specified, with the
  * 30-level row inferred as "shift everything up one tier" per the (qualitative) description --
- * flagged in the README.
+ * flagged in the README. Prices were nerfed across the board in a later balance pass (30->20,
+ * 90->55, 270->115, 450->185), then nerfed again in a second pass (20->10, 55->20, 115->45,
+ * 185->85) to make the pricier tiers actually reachable; DEFAULT also picked up a per-wave usage
+ * cap around the same time (see Player.DEFAULT_SPINS_PER_WAVE) since it has no other limiter
+ * besides 1 LVL.
  */
 public enum EnchantSpinOption {
     DEFAULT(1, new double[]{74.9, 20.0, 4.0, 1.0, 0.1}),
-    SPIN_30(30, new double[]{0, 75, 20, 4, 1}),
-    SPIN_90(90, new double[]{0, 0, 66, 24, 10}),
-    SPIN_270(270, new double[]{0, 0, 20, 50, 30}),
-    SPIN_450(450, new double[]{0, 0, 0, 50, 50});
+    SPIN_30(10, new double[]{0, 75, 20, 4, 1}),
+    SPIN_90(20, new double[]{0, 0, 66, 24, 10}),
+    SPIN_270(45, new double[]{0, 0, 20, 50, 30}),
+    SPIN_450(85, new double[]{0, 0, 0, 50, 50});
 
     // Tier 1-5 display colors, matching the ArmorTier/WeaponTier palette conventions
     public static final Color[] TIER_COLORS = {

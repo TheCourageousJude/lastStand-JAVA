@@ -15,7 +15,7 @@ public class EnchantUI {
         int panelW = 700, panelH = 560;
         int px = (screenWidth - panelW) / 2;
         int py = (screenHeight - panelH) / 2;
-        boolean spinning = p.isSpinning(now);
+        boolean spinning = p.isSpinning();
 
         g.setColor(new Color(0, 0, 0, 180));
         g.fillRect(0, 0, screenWidth, screenHeight);
@@ -27,7 +27,8 @@ public class EnchantUI {
 
         g.setFont(new Font("SansSerif", Font.PLAIN, 12));
         g.setColor(Color.LIGHT_GRAY);
-        g.drawString("Press \"E\" to exit", px + 16, py + 22);
+        String exitKey = p.playerNumber == 1 ? "E" : "P";
+        g.drawString("Press \"" + exitKey + "\" to exit", px + 16, py + 22);
 
         // Current LVL box (the spin currency now), top-right
         g.setColor(new Color(30, 130, 70));
@@ -57,21 +58,33 @@ public class EnchantUI {
         int wheelD = 200;
         int wheelCx = px + panelW / 2 - 40;
         int wheelCy = py + 235;
-        double spinProgress = spinning ? 1.0 - (p.spinAnimUntil - now) / (double) Player.SPIN_ANIM_MS : 1.0;
+        // spinAnimUntil is stamped in real wall-clock time (see Player.trySpin()'s comment on
+        // why), so progress must be measured against real time too, not the paused-aware `now`
+        // this method otherwise uses -- mixing the two was the exact class of bug that broke this
+        // animation (and separately crashed DamagePopup) once any pause had occurred.
+        double spinProgress = spinning
+                ? 1.0 - (p.spinAnimUntil - System.currentTimeMillis()) / (double) Player.SPIN_ANIM_MS
+                : 1.0;
         drawWheel(g, wheelCx, wheelCy, wheelD, spinning, spinProgress, p.lastSpinTier, p.lastSpinOption, p.lastSpinLandingFraction);
-        drawArrowAndSpinButton(g, wheelCx + wheelD / 2, wheelCy);
+        // Key labels mirror the real keybinds in GamePanel.tickEnchanting(): P1 reads 1-5 left to
+        // right, P2 reads 7,8,9,0,- (their mirrored side of the number row, same price order).
+        String[] spinKeyLabels = p.playerNumber == 1
+                ? new String[]{"1", "2", "3", "4", "5"}
+                : new String[]{"7", "8", "9", "0", "-"};
+        int defaultSpinsLeft = Player.DEFAULT_SPINS_PER_WAVE - p.defaultSpinsUsedThisWave;
+        drawArrowAndSpinButton(g, wheelCx + wheelD / 2, wheelCy, spinKeyLabels[0], defaultSpinsLeft > 0);
 
         // Priced spin options, sketch-style boxes
         int boxY = py + 340;
         g.setFont(new Font("SansSerif", Font.PLAIN, 12));
-        g.setColor(Color.LIGHT_GRAY);
-        g.drawString("Default: 1 LVL  --  [1] SPIN", px + 16, boxY);
+        g.setColor(defaultSpinsLeft > 0 ? Color.LIGHT_GRAY : new Color(150, 60, 60));
+        g.drawString("Default: 1 LVL (" + defaultSpinsLeft + "/" + Player.DEFAULT_SPINS_PER_WAVE
+                + " left this wave)  --  [" + spinKeyLabels[0] + "] SPIN", px + 16, boxY);
         int boxX = px + 16;
-        int[] keys = {2, 3, 4, 5};
         EnchantSpinOption[] options = {EnchantSpinOption.SPIN_30, EnchantSpinOption.SPIN_90,
                 EnchantSpinOption.SPIN_270, EnchantSpinOption.SPIN_450};
         for (int i = 0; i < options.length; i++) {
-            boxX = drawPriceBox(g, boxX, boxY + 14, keys[i], options[i]);
+            boxX = drawPriceBox(g, boxX, boxY + 14, spinKeyLabels[i + 1], options[i]);
         }
 
         // Last spin result -- hidden while the wheel is still "spinning" (no reveal early)
@@ -85,10 +98,12 @@ public class EnchantUI {
             g.drawString("Last spin: Tier " + p.lastSpinTier + " -- " + describeResult(p.lastSpinResult), px + 16, resultY);
         } else {
             g.setColor(Color.GRAY);
-            g.drawString("No spin yet -- press 1 to try your luck", px + 16, resultY);
+            g.drawString("No spin yet -- press " + spinKeyLabels[0] + " to try your luck", px + 16, resultY);
         }
 
-        // Currently equipped summary for this category
+        // Currently equipped summary for this category -- while THIS category's own animation is
+        // still running, show the pre-spin snapshot instead of the live (already-applied) result,
+        // so the reveal happens on the same beat as "Last spin" above, not a frame early.
         int equipY = resultY + 26;
         g.setFont(new Font("SansSerif", Font.BOLD, 14));
         g.setColor(Color.LIGHT_GRAY);
@@ -96,9 +111,13 @@ public class EnchantUI {
         g.setFont(new Font("SansSerif", Font.PLAIN, 13));
         List<EnchantType> pool = EnchantType.forCategory(p.enchantCategory);
         int lineY = equipY + 20;
+        boolean hiddenBehindSpin = spinning && p.enchantCategory == p.spinningCategory;
+        Map<EnchantType, Integer> displayed = hiddenBehindSpin
+                ? (p.preSpinSnapshot == null ? Map.of() : p.preSpinSnapshot)
+                : p.enchants.getOrDefault(p.enchantCategory, Map.of());
         boolean any = false;
         for (EnchantType type : pool) {
-            Integer amp = p.enchants.getOrDefault(p.enchantCategory, Map.of()).get(type);
+            Integer amp = displayed.get(type);
             if (amp == null) continue;
             any = true;
             g.setColor(Color.WHITE);
@@ -107,7 +126,7 @@ public class EnchantUI {
         }
         if (!any) {
             g.setColor(Color.GRAY);
-            g.drawString("(none yet)", px + 16, lineY);
+            g.drawString(hiddenBehindSpin ? "(revealing...)" : "(none yet)", px + 16, lineY);
         }
     }
 
@@ -237,7 +256,7 @@ public class EnchantUI {
         return 0;
     }
 
-    private void drawArrowAndSpinButton(Graphics2D g, int arrowX, int arrowY) {
+    private void drawArrowAndSpinButton(Graphics2D g, int arrowX, int arrowY, String defaultSpinKey, boolean spinsLeft) {
         g.setColor(new Color(150, 80, 190));
         int[] xs = {arrowX + 5, arrowX + 35, arrowX + 35};
         int[] ys = {arrowY, arrowY - 14, arrowY + 14};
@@ -245,19 +264,20 @@ public class EnchantUI {
         g.setColor(new Color(200, 40, 40));
         g.fillRect(arrowX + 35, arrowY - 3, 40, 6);
 
-        // SPIN button, directly under the arrow per the sketch
+        // SPIN button, directly under the arrow per the sketch -- dimmed to gray once the
+        // Default spin's per-wave attempts run out, so it visibly can't be used until refilled.
         int btnW = 80, btnH = 26;
         int btnX = arrowX + 20;
         int btnY = arrowY + 22;
-        g.setColor(new Color(200, 60, 60));
+        g.setColor(spinsLeft ? new Color(200, 60, 60) : new Color(70, 70, 75));
         g.fillRoundRect(btnX, btnY, btnW, btnH, 8, 8);
         g.setColor(Color.WHITE);
         g.drawRoundRect(btnX, btnY, btnW, btnH, 8, 8);
         g.setFont(new Font("SansSerif", Font.BOLD, 13));
-        g.drawString("[1] SPIN", btnX + 6, btnY + 17);
+        g.drawString("[" + defaultSpinKey + "] SPIN", btnX + 6, btnY + 17);
     }
 
-    private int drawPriceBox(Graphics2D g, int x, int y, int key, EnchantSpinOption option) {
+    private int drawPriceBox(Graphics2D g, int x, int y, String key, EnchantSpinOption option) {
         int w = 150, h = 60;
         g.setColor(new Color(45, 45, 55));
         g.fillRoundRect(x, y, w, h, 8, 8);

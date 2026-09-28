@@ -39,27 +39,31 @@ public class WaveManager {
     public int currentWave = 1;
     public boolean bossWave = false;
     public int wavesCompleted = 0; // used by GamePanel to award dark orbs (+10 each)
+    // "+2, +4, +7, +11, +16, +22, +29, +37, +46..." -- triangular-ish growth per boss defeated
+    // (game-wide, not per-player), replacing the old flat +4/boss. See bossDamageBonus() for the
+    // closed-form formula and the hard +50 cap once wave 51 is reached.
+    public int bossKillCount = 0;
     private int enemiesToSpawn;
     private int enemiesSpawned;
     private long lastSpawnAt;
     private static final int SPAWN_INTERVAL_MS = 900;
     private List<EnemyType> currentPool; // types allowed to spawn this wave
 
-    public WaveManager(Arena arena) {
+    public WaveManager(Arena arena, long nowMs) {
         this.arena = arena;
-        startWave(1);
+        startWave(1, nowMs);
     }
 
     public List<Enemy> getEnemies() {
         return enemies;
     }
 
-    public void startWave(int waveNumber) {
+    public void startWave(int waveNumber, long nowMs) {
         if (waveNumber > 1) wavesCompleted++; // the previous wave was just cleared
         currentWave = waveNumber;
         enemies.clear();
         enemiesSpawned = 0;
-        lastSpawnAt = System.currentTimeMillis();
+        lastSpawnAt = nowMs; // must share the caller's clock -- see GamePanel's paused virtual clock
         currentPool = poolFor(waveNumber);
         configurePortals(); // needs currentPool to assign one type per open portal
         enemiesToSpawn = bossWave ? 1 : 3 + waveNumber; // tune freely
@@ -88,8 +92,18 @@ public class WaveManager {
     }
 
     /** Called when both players are dead: "resets back to 1 if game is over". */
-    public void resetToWaveOne() {
-        startWave(1);
+    public void resetToWaveOne(long nowMs) {
+        bossKillCount = 0;
+        startWave(1, nowMs);
+    }
+
+    /** Enemy damage bonus for the current wave: triangular-ish growth per boss defeated
+     *  (+2, +4, +7, +11, +16, +22, +29, +37, +46...), hard-capped at a flat +50 once wave 51 is
+     *  reached so endless play stays survivable instead of scaling forever. */
+    public int bossDamageBonus() {
+        if (currentWave >= 51) return 50;
+        if (bossKillCount <= 0) return 0;
+        return 1 + bossKillCount * (bossKillCount + 1) / 2;
     }
 
     /**
@@ -140,7 +154,7 @@ public class WaveManager {
         }
 
         if (enemiesSpawned >= enemiesToSpawn && enemies.isEmpty()) {
-            startWave(currentWave + 1);
+            startWave(currentWave + 1, nowMs);
         }
     }
 
@@ -149,7 +163,7 @@ public class WaveManager {
         EnemyType type = portalTypeAssignment.get(portal); // consistent per portal for the whole wave
         int size = bossWave ? 46 : 30;
         double[] pos = arena.randomSpawnNear(portal, size);
-        enemies.add(new Enemy(type, bossWave, pos[0], pos[1], currentWave));
+        enemies.add(new Enemy(type, bossWave, pos[0], pos[1], currentWave, bossDamageBonus()));
         enemiesSpawned++;
     }
 }
