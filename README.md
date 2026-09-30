@@ -1,6 +1,7 @@
 # Last Stand — v1.0.4
 
-Hey there! So this is yet another side project of a Java game.
+See [CHANGELOG.md](CHANGELOG.md) for what changed in this release.
+
 A local 2-player, wave-survival game built in pure Java (Swing/Java2D — **no
 external libraries**, so there's nothing to download or configure;
 `javac`/`java` from any JDK 17+ is enough).
@@ -25,7 +26,7 @@ just open the folder in IntelliJ/VS Code and hit Run on `Main.java`.)
 | Select hotbar slot 1 (weapon) | 1               | 0                |
 | Select hotbar slot 2 (medic kit) | 2            | 9                |
 | Select hotbar slot 3 (shield) | 3               | 8                |
-| Select hotbar slot 4 (secondary — Ranger's manual dagger) | 4 | 7 |
+| Select hotbar slot 4 (secondary — Ranger's Combat Pin) | 4 | 7 |
 | Open shop, or enchant if near the Enchanting Center | E | P |
 | Enchant wheel spins (Default / 30 / 90 / 270 / 450 tier, cheapest to priciest) | 1 2 3 4 5 | 7 8 9 0 - |
 | Menu confirm                  | SPACE or ENTER (either works, either player) |
@@ -35,8 +36,9 @@ just open the folder in IntelliJ/VS Code and hit Run on `Main.java`.)
 **Inventory hotbar**: pressing a number selects that slot (shown highlighted in
 the HUD); your next attack-key press *uses* whatever's selected, then
 automatically snaps back to slot 1 (weapon) so you don't have to remember to
-switch back before you can attack again. Slot 1 is just your normal attack.
-Slot 4 only does anything for the Ranger (a manual melee swing with the dagger,
+switch back before you can attack again — except slot 4, which stays selected
+after firing (see below). Slot 1 is just your normal attack.
+Slot 4 only does anything for the Ranger (fires a Combat Pin on demand,
 even with arrows in reserve) — it's blank/unused for the Tank.
 
 **In the shop and while enchanting**: whether either one pauses the rest of
@@ -105,13 +107,13 @@ place of the reroll line until then.
 |---|---|
 | Speedy | +10% move speed / level |
 | Armored | +1 Defense / level, **plus +1 Defense per boss defeated** (only for players who own at least 1 level of Armored; uncapped, stacks forever) |
-| Recovery | Tank: +2 HP recovered per enemy slain, per level. Ranger: +1 arrow recovered per enemy slain, per level |
+| Recovery | Tank: restores a flat 3% of current total Max HP per enemy slain (not scaled by level). Ranger: +1 arrow recovered per enemy slain, per level |
 | Critical | +3% chance to double a hit / level -- same mechanic for both classes |
-| Preserved Power | +2 Max HP per 5-ish LVL held (milestones at 5,15,25,...,495) and +1 damage per 10 LVL held (milestones at 10,20,...,500), per level -- rises/falls live as LVL is gained or spent. Capped at +2,000 Max HP / +1,000 damage (level 20, LVL 500) |
+| Preserved Power | +1 Max HP AND +1 damage per 20 LVL held (milestones at 20,40,...,500), per level -- unified interval/increment for both stats now. Rises/falls live as LVL is gained or spent. Capped at +500 Max HP / +500 damage (level 20, LVL 500) |
 | Dark Sorcery | +1-4 bonus dark orbs per wave cleared, scaling to +20-80 at level 20 |
 | Silver Bank | +1-2 bonus silver orbs per wave cleared, scaling to +20-40 at level 20 |
 | Grow | +2 max HP per wave cleared, per level (uncapped, stacks forever, heals the gain too) |
-| Reforged | +1 flat damage per wave cleared, per level (uncapped, stacks forever, applies to every attack) |
+| Reforged | +2 flat damage per wave cleared, per level (uncapped, stacks forever, applies to every attack) |
 
 **Attack - Defense combat formula**: whenever a player takes a hit,
 `finalDamage = max(1, Attack - Defense)`. `Player.totalDefense()` is now the
@@ -161,15 +163,24 @@ Tank's version, for both classes.
 - All 8 enemy types with a simple pixel face each, wave-scaled health (+10/wave)
   and damage (flat +2/wave for every type), +10% speed every 5 waves
 - Boss rounds every 5th wave: 5× health, 0.5× speed, 2.5× damage, knockback-immune
+- Every boss defeated makes ALL future enemies 11% tankier (compounding, uncapped) -- on top of
+  the existing damage-per-boss-kill bonus. This is meant to be offset by the player's own
+  progress through the same boss kills: Armored's per-boss Defense stacks, Grow's per-wave HP,
+  and whatever enchants/upgrades a player has invested in, not by capping the multiplier itself
 - Weight-based knockback for players and enemies; knockback now routes through
   the same collision system as normal movement so nothing gets shoved into a wall
-- **Tank**: sword beside the character (flips with facing), green when ready /
-  red while on cooldown, swings on attack. Damage scales with weapon tier
+- **Tank**: throws an infinite-ammo Dagger (flips with facing), green when ready /
+  red while on cooldown, a quick forward flick on attack — no melee swing anymore.
+  Short range (~3.0 tiles, dissipates on its own), ~400ms cooldown, small knockback,
+  a bit smaller than an arrow. Damage scales with weapon tier
 - **Ranger**: bow beside the character (same color/cooldown behavior), fires
-  ruby-red projectiles while it has arrows; automatically switches to a
-  dagger melee swing (33% of current effective bow damage) when out of
+  ruby-red projectiles while it has arrows; automatically switches to firing
+  a Combat Pin (20% of current effective bow damage) when out of
   arrows -- scales down with the bow instead of falling further behind it as
-  the bow gets upgraded. No more passive ammo regen — arrows are bought from
+  the bow gets upgraded. The Combat Pin is also a fired projectile (not a melee
+  swing): tiny range (~1.75 tiles), a very fast ~100ms cooldown fully independent
+  of the bow's, no knockback at all, and it can be fired on demand from hotbar
+  slot 4 even with arrows left. No more passive ammo regen — arrows are bought from
   the shop
 - Passive healing: Tank +3 HP/sec, Ranger +1 HP/sec
 - **Per-player economy**: separate wallets for P1/P2. Dark orbs (+10 to *both*
@@ -187,6 +198,35 @@ Tank's version, for both classes.
   and fades over 1.5s instead, Terraria-style
 - Game over: resets wave to 1 and **both wallets to zero**; a clickable
   "BACK TO MENU" button as well as SPACE/ENTER
+
+## Weapon Remake (v1.0.7)
+
+Melee swings don't exist anymore, for either class. Both weapons are thrown/fired projectiles now:
+
+| | Tank's **Dagger** | Ranger's **Combat Pin** |
+|---|---|---|
+| Replaces | the old melee sword swing | the old melee dagger-fallback |
+| Ammo | infinite | infinite |
+| Range | ~3.0 tiles, dissipates on its own | ~1.75 tiles, dissipates on its own |
+| Cooldown | ~400ms (medium) | ~100ms (very fast) -- its own cooldown, fully independent of the bow's ~1000ms (slow, unchanged reference) |
+| Knockback | small (~4, vs. the bow's ~8) | none at all |
+| Projectile size | a little smaller than an arrow | a lot smaller than the Dagger |
+| Damage formula | unchanged from the old sword (tier + Preserved Power + Dagger Damage enchant + Reforged, capped at 80) | unchanged from the old dagger (20% of effective bow damage + Reforged, capped at 80) |
+| Fires | on the normal attack key, slot 1 | automatically once arrows run out, or on demand from slot 4 even with arrows left |
+
+The Combat Pin's cooldown is deliberately its own thing rather than reusing the bow's --
+otherwise running out of arrows would either inherit the bow's slow rate (contradicting "very
+fast") or force the shared cooldown down to 100ms game-wide (breaking medic kit/shield timing
+too). Because of that, slot 4 no longer auto-deselects back to the weapon slot after firing —
+at a ~100ms fire rate, having to reselect the slot before every shot would make it unusable.
+
+The idle weapon rig beside the character now does a quick forward recoil "flick" for both the
+Dagger and the Combat Pin, instead of the old rotating swing arc, since neither is swung anymore.
+
+These are first-pass numbers, tuned by feel rather than by any spec -- all five constants for
+each weapon live together in `Player.java` (`DAGGER_MAX_RANGE_PX`, `DAGGER_SPEED_PX`,
+`DAGGER_KNOCKBACK`, `DAGGER_PROJECTILE_RADIUS`, and the matching `COMBAT_PIN_*` ones) if you
+want to hand me different values.
 
 ## Assumptions I made (all easy to retune, and called out in comments)
 
@@ -222,13 +262,13 @@ Tank's version, for both classes.
   you described, though it does mean a bad roll can downgrade something you
   already had.
 - **Weapon damage is now an explicit table per tier**, not a shared
-  multiplier — Sword: 50 (Wooden) / 60 / 75 / 95 / 110 (Diamond). Bow: 90
+  multiplier — Dagger: 50 (Wooden) / 60 / 75 / 95 / 110 (Diamond). Bow: 90
   (Wooden) / 105 / 130 / 165 / 220 (Diamond), exactly as specified. Both
   classes are 100 max HP.
-- **Ranger's dagger damage** is now 33% of the Ranger's current *effective*
+- **Ranger's Combat Pin damage** is 20% of the Ranger's current *effective*
   bow damage (`arrowDamage()`, so it includes tier and Preserved Power), plus
-  Melee Power, capped at 80 — replacing the old flat 23. Flagged as a
-  placeholder ahead of a possible throwable-darts rework, per your note.
+  Reforged, capped at 80. This was the flagged "possible throwable-darts
+  rework" placeholder -- it happened: see the Weapon Remake section below.
 - **Shield duration** — 5 seconds of full damage/knockback immunity per
   activation (`Player.SHIELD_DURATION_MS`), not specified in the doc; the
   20s cooldown between activations is exactly as you specified.
@@ -268,7 +308,7 @@ kept strictly separate per player, same as the inventory hotbar convention:
 
 | Action | P1 | P2 |
 |---|---|---|
-| Select Sword | V (Tank only) | V (Tank only) |
+| Select Dagger | V (Tank only) | V (Tank only) |
 | Select Bow | M (Ranger only) | M (Ranger only) |
 | Select Helmet | Z | , comma |
 | Select Chestplate | X | . period |
@@ -283,19 +323,22 @@ limit spamming it. The other four prices were nerfed twice since first
 shipping (30/90/270/450 → 20/55/115/185 → the current 10/20/45/85) to make
 the pricier, better-odds tiers actually reachable.
 
-Entering the menu always starts on your one main weapon slot (Sword for
+Entering the menu always starts on your one main weapon slot (Dagger for
 Tank, Bow for Ranger) — pressing an armor key a **second time** (while that
 same piece is already selected) toggles back to it too, so there's always an
 obvious way back without hunting for V/M.
 
 **It's a gamble, not a menu.** Each of the 5 gear categories (Helmet,
-Chestplate, Leggings, Sword, Bow) has its own pool of 3 enchant types and its
+Chestplate, Leggings, Dagger, Bow) has its own pool of 3 enchant types and its
 own *independent* enchant state — a helmet and a pair of leggings can have
 completely different Regen levels, even though all 3 armor pieces still
 share one unified `ArmorTier` for their raw Defense stat. The pools match
 your spec exactly (Regen/Protection/HP Boost for every armor piece; Quick
-Charge/Arrow Damage/Arrow Speed for bow; Swing Speed/Sword Damage/Lucky
-Strike for sword), each with I/II/III amplifiers.
+Charge/Arrow Damage/Arrow Speed for bow; Throw Speed/Dagger Damage/Lucky
+Strike for the Dagger), each with I/II/III amplifiers. (Internally the enum
+still calls this category SWORD and the enchants SWING_SPEED/SWORD_DAMAGE --
+kept as-is post-remake so old saves' enchant slots keep resolving; only the
+displayed names changed.)
 
 **Protection and HP Boost were reworked to be percentage-based** rather
 than flat numbers. Protection now grants +10%/+25%/+50% of your *total*
@@ -328,14 +371,16 @@ I — matching your bow walkthrough exactly (Tier 1 = 3 possible outcomes,
 Tier 2 = 6, Tier 3 = 10, and so on). The result **replaces** that gear's
 enchants outright.
 
-Every enchant effect is live in combat: Sword/Arrow Damage add straight to
-your hit, Swing Speed/Quick Charge shrink your attack cooldown, Protection
-adds to Defense, Regen adds to passive healing, HP Boost directly grows your
-Max HP (see above), Lucky Strike stacks its own crit chance onto the
-Critical perk (sword swings only), and Arrow Speed boosts both projectile
-velocity and the knockback it deals.
+Every enchant effect is live in combat: Dagger/Arrow Damage add straight to
+your hit, Throw Speed/Quick Charge shrink your attack cooldown (Throw Speed
+does NOT touch the Combat Pin's own fixed cooldown -- see the Weapon Remake
+section), Protection adds to Defense, Regen adds to passive healing, HP
+Boost directly grows your Max HP (see above), Lucky Strike stacks its own
+crit chance onto the Critical perk (Dagger throws only), and Arrow Speed
+boosts both arrow velocity and the knockback it deals (the Dagger and
+Combat Pin have their own fixed knockback, untouched by this enchant).
 
-## Not yet built (explicitly marked "coming soon")
+## Not yet built (explicitly marked "coming soon" per your notes)
 
 Potion of Experience. Armor, the upgrade-perks shop, and enchanting are now
 all implemented (see the sections above).

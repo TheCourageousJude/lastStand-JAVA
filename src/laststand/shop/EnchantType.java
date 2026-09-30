@@ -18,9 +18,10 @@ public enum EnchantType {
     ARROW_DAMAGE(EnchantCategory.BOW, "Arrow Damage", new double[]{10, 25, 50}, "arrow damage"),
     ARROW_SPEED(EnchantCategory.BOW, "Arrow Speed", new double[]{25, 50, 75}, "% arrow speed & knockback"),
 
-    // SWORD (Tank only)
-    SWING_SPEED(EnchantCategory.SWORD, "Swing Speed", new double[]{10, 25, 50}, "% cooldown reduction"),
-    SWORD_DAMAGE(EnchantCategory.SWORD, "Sword Damage", new double[]{7, 14, 28}, "sword damage"),
+    // DAGGER (Tank only) -- was "SWORD"; enum identifier kept as-is so old saves' enchant slots
+    // still resolve, only the displayed names below changed for the weapon remake.
+    SWING_SPEED(EnchantCategory.SWORD, "Throw Speed", new double[]{10, 25, 50}, "% cooldown reduction"),
+    SWORD_DAMAGE(EnchantCategory.SWORD, "Dagger Damage", new double[]{7, 14, 28}, "dagger damage"),
     LUCKY_STRIKE(EnchantCategory.SWORD, "Lucky Strike", new double[]{5, 10, 20}, "% crit chance (stacks with Critical)");
 
     public final EnchantCategory category;

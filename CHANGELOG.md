@@ -2,6 +2,172 @@
 
 All notable changes to this project are documented here.
 
+## v1.1.1
+
+### Fixed
+- **v1.1.0 didn't compile** -- `GamePanel.java` had 4 leftover calls to `SaveManager`'s old
+  no-argument methods (lines 393, 445, 606, 1352, all in the save/load path) that were never
+  updated when `SaveManager` was switched over to two separate, mode-flagged save files. All 4
+  now pass `p2Enabled` like every other `SaveManager` call site already did.
+- This also means the separate-save-file design is now actually complete end to end: solo (P1
+  only) and 2-player runs each get their own save file (`laststand_save_solo.dat` /
+  `laststand_save_coop.dat`, see `SaveManager`'s class doc), so a solo save can only ever be
+  loaded into a solo session and a 2-player save only into a 2-player session -- supersedes
+  v1.0.8's single-shared-save approach.
+- Version bumped to v1.1.1.
+
+## v1.1.0
+
+### Fixed
+- **A maxed (Lv20/20) upgrade could still show up in the shop's 3 offered slots**, uselessly
+  occupying one instead of an available perk (visible in your screenshot: Silver Bank at MAX
+  still sitting in the reroll list). `Player.rerollPerks()` now excludes anything already at
+  `MAX_LEVEL` from the pool it picks from -- a maxed perk gets swapped out for an available one
+  the moment it happens, whether from a fresh reroll or the automatic re-roll after any
+  purchase. Only falls back to including maxed perks if literally all 9 are maxed.
+
+### Changed -- another balance pass
+- **Boss HP scaling: 18% -> 11%** compounding per boss defeated ("definitely very, very tough").
+- **Reforged: +3 -> +2** flat damage per wave cleared, per level (nerfed again).
+- **Recovery (Tank) reworked**: was +2 flat HP per kill, per level; now restores a flat 3% of
+  current total Max HP per kill. Doesn't scale further with additional Recovery levels beyond
+  the first -- the request dropped "per level" for this one specifically (unlike every other
+  upgrade), so treated as a flat percentage rather than 3%-per-level, which would spiral fast at
+  high levels. Flag this if you actually wanted it to scale per level instead. Ranger's Recovery
+  (+1 arrow/kill/level) is unchanged.
+- **Preserved Power reworked again**: HP and damage bonuses are now unified -- both +1 per
+  level at each of 25 milestones, every 20 LVL (20, 40, ... 500), same increment and interval
+  for both stats (previously HP was +2 per milestone every 10 LVL, damage was +1 per milestone
+  every 10 LVL). New ceiling: +500 Max HP / +500 damage at Preserved Power level 20 and LVL 500
+  (was +2,000 / +1,000). Upgrade description text unchanged, per request.
+- **Enchant tier background color lightened**: the darkened fill behind a gear glyph was 35%
+  brightness, hard to tell the tier color apart from the background -- now 50%.
+- Version bumped to v1.1.0.
+
+## v1.0.10
+
+### Fixed -- icon colors were tracking the wrong thing
+- **Correction to v1.0.6/v1.0.8's weapon/armor icon coloring.** The box behind a gear glyph and
+  the glyph's own color were both being driven by the same thing (WeaponTier/ArmorTier's
+  material). They're two independent stats and now use two independent colors:
+  - **The box behind the glyph** is now colored by that specific slot's own ENCHANT tier (Tier
+    1-5 -- the same Tier the enchant wheel itself rolls, see `EnchantSpinOption.TIER_COLORS`:
+    green/orange/silver/gold/cyan), darkened 35%. New `Player.enchantTierFor(EnchantCategory)`
+    sums that slot's 3 enchant types' amplifiers (0-9 total) and buckets it down into Tier 1-5;
+    a slot with nothing enchanted into it yet shows a plain neutral dark gray box instead.
+  - **The glyph itself** is colored by the weapon/armor's MATERIAL (`WeaponTier`/`ArmorTier`
+    .displayColor) -- reverted back to actual material tones (Wooden=brown, Flint=dark gray,
+    Iron=silver, Golden=gold, Diamond=cyan; same idea for Leather/Copper/Iron/Gold/Diamond
+    armor) instead of the green/orange/silver/gold/cyan palette, which was never meant for
+    material in the first place -- that palette belongs to the enchant tier (see above).
+- Version bumped to v1.0.10.
+
+## v1.0.9
+
+### Changed
+- **Dagger range: 1.5 -> 3.0 tiles.**
+- **Combat Pin range: 0.75 -> 1.75 tiles**, alongside a damage nerf: 33% -> 20% of the
+  Ranger's effective bow damage. (The actual old value was 33%, not the 0.4/40% floated when
+  asking for this -- nerfed the real number down to 20% as intended.)
+- Version bumped to v1.0.9.
+
+## v1.0.8
+
+### Changed
+- **Reforged buffed from +1 to +3 flat damage per wave cleared, per level** (still uncapped,
+  stacks forever).
+- **Weapon/armor tier icons: glyph keeps the full tier color, box behind it is now a darkened
+  (35%) version instead of the same full-brightness color** -- fixes the glyph blending into
+  an equally-bright background.
+- **Dagger/Combat Pin/Bow hotbar icons redesigned** as small blocky pixel-art glyphs (Dagger:
+  4x3, hilt + a 3-row blade + a tip pixel; Combat Pin: 4x3, a thin straight needle -- visibly
+  smaller/thinner than the Dagger; Bow: 3x2, a string with the crescent limbs' tips poking out).
+  Shared as constants on `Player` (`DAGGER_GLYPH`/`COMBAT_PIN_GLYPH`/`BOW_GLYPH`) so the hotbar
+  and the in-world weapon rig can't drift apart.
+- **In-world weapon rig now uses the same glyphs**, and swaps from the Bow glyph to the Combat
+  Pin glyph the instant a Ranger runs out of arrows -- the held weapon visibly changes, not
+  just the ammo count.
+- **Dagger/Combat Pin no longer swing OR recoil-kick on attack -- they briefly disappear**
+  (~90ms) right when thrown, since the projectile now on screen IS the weapon; it reappears
+  after (infinite ammo, so there's always another one).
+- **Arena squared to 50x50** (was 50x45) -- the horizontal arms of the cross-shaped path
+  reached noticeably farther from the center than the vertical arms; all 4 arms/portals are
+  now equidistant from center.
+- **Boss kills now grant 5x the normal per-kill EXP formula**, on top of the existing
+  yellow-orb/Armored-stack/damage-bonus rewards a boss kill already grants.
+- **A downed player (not the whole team) is revived at the start of the next wave, if that
+  wave is cleared.** Hooked into the same wave-completion check that already awards orbs --
+  `alive` and HP are restored to full; gear, upgrades, and ammo are untouched (nothing is
+  wiped by dying). The whole team still has to go down for GAME_OVER, unchanged.
+
+### Fixed -- save state
+- **Save/load no longer restores the arena theme or the "pause during shop/enchanting"
+  option.** Those are session/display settings, not run progress -- removed the two fields
+  from `SaveData` entirely (old save files with them still in the stream deserialize fine;
+  Java's default serialization just ignores fields the class no longer declares).
+- **Loading now uses the CURRENT session's P1/P2 setup, not the save's own recorded one.**
+  Previously `p2Enabled` was forced from the save file, silently overriding whatever the
+  player had just chosen on the main menu. Loading a solo save into a 2-player session now
+  gives P2 a fresh character instead of being blocked entirely; loading a 2-player save solo
+  just leaves the save's P2 data unused.
+- Version bumped to v1.0.8.
+
+## v1.0.7
+
+### Changed -- Weapon remake: melee swings are gone
+- **Tank's sword swing is now a thrown Dagger (infinite ammo).** Short range (~1.5 tiles,
+  dissipates on its own even in the open), medium fire rate (~400ms cooldown, was 650ms), small
+  knockback, a bit smaller than an arrow. Same damage formula and enchant hooks as the old sword
+  (tier + Preserved Power + Reforged, capped at 80); the enchant category is still internally
+  `EnchantCategory.SWORD` so old saves' enchant slots keep resolving, but everywhere the player
+  sees it now reads "Dagger" (shop, enchant UI, Character Select, help text). The "Swing Speed"
+  enchant is now "Throw Speed"; "Sword Damage" is now "Dagger Damage".
+- **Ranger's melee dagger-fallback is now the Combat Pin (infinite ammo), a fired sidearm.**
+  Tiny range (~0.75 tiles), very fast fire rate (~100ms cooldown) -- its own cooldown, fully
+  independent of the bow's, so running out of arrows turns into genuine rapid fire instead of
+  inheriting the bow's slow rate. No knockback at all. A lot smaller than the Dagger. Usable
+  automatically once arrows run out, or manually from hotbar slot 3 even with arrows left --
+  slot 3 no longer auto-deselects back to the weapon slot after firing, since re-selecting it
+  before every ~100ms shot would make it unusable.
+- **No more melee hit-resolution at all.** `GamePanel.meleeAttack()` is gone; the Dagger, the
+  Combat Pin, and arrows are all resolved as projectiles now, including the two new weapons'
+  self-imposed max range (`Projectile.maxRange` / `traveledDistance()` -- new fields, default
+  unbounded so arrows and enemy shots are unaffected).
+- The idle weapon rig beside the character no longer shows a rotating swing arc for the
+  Dagger/Combat Pin -- it's a quick forward recoil flick now, matching "thrown", not "swung".
+- Version bumped to v1.0.7.
+
+## v1.0.6
+
+### Added
+- **New Game now asks before it can throw away an existing save.** Picking "Play" from the
+  main menu with a save on disk opens a confirmation: "Use previous save" (loads it, same
+  path as "Load Save") or "Start fresh" (deletes it, then goes to Character Select as normal).
+  Defaults to the non-destructive choice. No save on disk -> goes straight to Character
+  Select like before, nothing changes for a first-time player.
+
+### Changed
+- **Weapon/armor tier icons now show their tier as a colored fill behind the glyph**, not just
+  a tinted glyph. New shared 5-tier palette (`WeaponTier`/`ArmorTier`): T1 green, T2 orange,
+  T3 silver, T4 gold, T5 cyan. Applies to the hotbar's weapon slot (sword or bow) and dagger
+  slot (shares the weapon tier, since dagger damage derives from it), and to the buff bar's
+  3 armor-piece icons. `ArmorTier.NONE` (not yet purchased) stays neutral gray, outside the
+  T1-T5 palette.
+- Version bumped to v1.0.6.
+
+## v1.0.5
+
+### Changed
+- **Every boss kill now makes all future enemies 18% tankier, compounding and uncapped**
+  (`WaveManager.bossKillHpMultiplier()`, applied in `Enemy.scaledHealth()`). This stacks on
+  top of the existing wave-scaled HP (+10/wave) and boss HP multiplier (5x), and on top of the
+  separate triangular damage-per-boss-kill bonus that already existed -- the two boss-kill
+  scalers are independent (HP compounds, damage grows triangularly and caps at wave 51).
+  Deliberately left uncapped: players are expected to keep pace through the same boss kills
+  via Armored's stacking Defense, Grow's per-wave Max HP, and their own enchant/upgrade
+  investment, rather than this being tuned to stay flat on its own.
+- Version bumped to v1.0.5.
+
 ## v1.0.4
 
 ### Added

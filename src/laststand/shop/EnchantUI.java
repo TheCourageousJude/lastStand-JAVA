@@ -48,7 +48,7 @@ public class EnchantUI {
         g.setFont(new Font("SansSerif", Font.PLAIN, 13));
         int catX = px + 16;
         EnchantCategory mainWeapon = p.playerClass == PlayerClass.TANK ? EnchantCategory.SWORD : EnchantCategory.BOW;
-        String mainLabel = (p.playerClass == PlayerClass.TANK ? "Sword" : "Bow") + " (Main)";
+        String mainLabel = (p.playerClass == PlayerClass.TANK ? "Dagger" : "Bow") + " (Main)";
         catX = drawCategoryChip(g, catX, catY, mainLabel, mainWeapon, p, true);
         catX = drawCategoryChip(g, catX, catY, "[Z/,] Helmet", EnchantCategory.HELMET, p, true);
         catX = drawCategoryChip(g, catX, catY, "[X/.] Chest", EnchantCategory.CHESTPLATE, p, true);
@@ -132,7 +132,7 @@ public class EnchantUI {
 
     private String categoryLabel(EnchantCategory cat) {
         return switch (cat) {
-            case SWORD -> "Sword";
+            case SWORD -> "Dagger";
             case BOW -> "Bow";
             case HELMET -> "Helmet";
             case CHESTPLATE -> "Chestplate";

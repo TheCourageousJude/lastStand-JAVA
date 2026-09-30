@@ -86,6 +86,9 @@ public class GamePanel extends JPanel {
     private boolean confirmingLoad = false;
     private boolean confirmLoadYes = false;
     private String pendingLoadSummary = "";
+    private boolean confirmingNewGame = false;
+    private boolean confirmNewGameKeepSave = true; // default to the non-destructive choice
+    private String pendingNewGameSummary = "";
     private String[] menuItems = {"Play", "Load Save", "Player 2: OFF", "Options", "Exit"};
     private int menuIndex = 0;
     private boolean p2Enabled = false;
@@ -170,8 +173,8 @@ public class GamePanel extends JPanel {
                 case GAME_OVER -> tickGameOver();
             }
         } catch (RuntimeException ex) {
-            // Last-resort safety net: two known hit-resolution spots are already hardened
-            // individually (see meleeAttack()/updateProjectiles()), but this catches anything
+            // Last-resort safety net: known hit-resolution spots are already hardened
+            // individually (see updateProjectiles()), but this catches anything
             // else too -- one bad frame gets logged to the console instead of the whole game
             // freezing or crashing. If this ever prints, the stack trace right here is exactly
             // what's needed to find and fix the real cause.
@@ -181,6 +184,38 @@ public class GamePanel extends JPanel {
     }
 
     private void tickMainMenu() {
+        if (confirmingNewGame) {
+            if (input.wasJustPressed(KeyEvent.VK_A) || input.wasJustPressed(KeyEvent.VK_LEFT)
+                    || input.wasJustPressed(KeyEvent.VK_D) || input.wasJustPressed(KeyEvent.VK_RIGHT)) {
+                confirmNewGameKeepSave = !confirmNewGameKeepSave;
+                input.consume(KeyEvent.VK_A); input.consume(KeyEvent.VK_LEFT);
+                input.consume(KeyEvent.VK_D); input.consume(KeyEvent.VK_RIGHT);
+            }
+            if (input.wasJustPressed(KeyEvent.VK_ESCAPE)) {
+                input.consume(KeyEvent.VK_ESCAPE);
+                confirmingNewGame = false;
+            }
+            if (input.wasJustPressed(KeyEvent.VK_SPACE) || input.wasJustPressed(KeyEvent.VK_ENTER)) {
+                input.consume(KeyEvent.VK_SPACE);
+                input.consume(KeyEvent.VK_ENTER);
+                confirmingNewGame = false;
+                if (confirmNewGameKeepSave) {
+                    // "Use the previous save" -- same path as Load Save, so it stays a single,
+                    // consistent way for a save to get consumed (see loadGame()'s doc comment).
+                    loadGame();
+                } else {
+                    // "Start fresh" -- the only place a save gets destroyed without ever being
+                    // loaded. Deliberately not the default (see confirmNewGameKeepSave above).
+                    // Only ever touches THIS mode's own file (see SaveManager's class doc) --
+                    // a solo run can never destroy a 2-player save or vice versa.
+                    SaveManager.delete(p2Enabled);
+                    state = GameState.CHARACTER_SELECT;
+                    p1Ready = false;
+                    p2Ready = false;
+                }
+            }
+            return;
+        }
         if (confirmingLoad) {
             if (input.wasJustPressed(KeyEvent.VK_A) || input.wasJustPressed(KeyEvent.VK_LEFT)
                     || input.wasJustPressed(KeyEvent.VK_D) || input.wasJustPressed(KeyEvent.VK_RIGHT)) {
@@ -215,7 +250,7 @@ public class GamePanel extends JPanel {
             input.consume(KeyEvent.VK_SPACE);
             input.consume(KeyEvent.VK_ENTER);
             switch (menuIndex) {
-                case 0 -> { state = GameState.CHARACTER_SELECT; p1Ready = false; p2Ready = false; }
+                case 0 -> openNewGameConfirmation(); // straight to Character Select if no save exists
                 case 1 -> openLoadConfirmation(); // no-op if there's no save yet
                 case 2 -> { p2Enabled = !p2Enabled; menuItems[2] = "Player 2: " + (p2Enabled ? "ON" : "OFF"); }
                 case 3 -> state = GameState.OPTIONS;
@@ -224,11 +259,44 @@ public class GamePanel extends JPanel {
         }
     }
 
-    /** Opens the Yes/No prompt for "Load Save", showing what's actually in the save. Does nothing
-     *  if there's no readable save. Peeking at the save here does NOT consume it. */
+    /** "Play" from the main menu. If there's no save for the CURRENT mode (solo vs 2-player --
+     *  see SaveManager's class doc, each mode has its own file) lying around, there's nothing to
+     *  lose -- go straight to Character Select like before. If there IS one, starting fresh
+     *  would silently throw it away, so ask first whether to use it (loads it, same as "Load
+     *  Save") or discard it for a clean run. Peeking at the save here does NOT consume it. */
+    private void openNewGameConfirmation() {
+        if (!SaveManager.saveExists(p2Enabled)) {
+            state = GameState.CHARACTER_SELECT;
+            p1Ready = false;
+            p2Ready = false;
+            return;
+        }
+        SaveData peek = SaveManager.load(p2Enabled);
+        if (peek == null) {
+            // Unreadable/incompatible save -- nothing sensible to offer to "use", so just clear
+            // it out of the way and proceed, same as if it never existed.
+            SaveManager.delete(p2Enabled);
+            state = GameState.CHARACTER_SELECT;
+            p1Ready = false;
+            p2Ready = false;
+            return;
+        }
+        StringBuilder sb = new StringBuilder("Wave " + peek.currentWave + "  |  P1 " + peek.p1.playerClass
+                + " LVL " + peek.p1.level);
+        if (peek.p2Enabled && peek.p2 != null) {
+            sb.append("  |  P2 ").append(peek.p2.playerClass).append(" LVL ").append(peek.p2.level);
+        }
+        pendingNewGameSummary = sb.toString();
+        confirmingNewGame = true;
+        confirmNewGameKeepSave = true; // always defaults to the non-destructive choice
+    }
+
+    /** Opens the Yes/No prompt for "Load Save", showing what's actually in the CURRENT mode's
+     *  save (solo vs 2-player each have their own file -- see SaveManager's class doc). Does
+     *  nothing if there's no readable save for that mode. Peeking here does NOT consume it. */
     private void openLoadConfirmation() {
-        if (!SaveManager.saveExists()) return;
-        SaveData peek = SaveManager.load();
+        if (!SaveManager.saveExists(p2Enabled)) return;
+        SaveData peek = SaveManager.load(p2Enabled);
         if (peek == null) return; // unreadable/incompatible -- nothing sensible to offer
         StringBuilder sb = new StringBuilder("Wave " + peek.currentWave + "  |  P1 " + peek.p1.playerClass
                 + " LVL " + peek.p1.level);
@@ -322,12 +390,17 @@ public class GamePanel extends JPanel {
      * save or it couldn't be read.
      */
     private boolean loadGame() {
-        SaveData data = SaveManager.load();
+        SaveData data = SaveManager.load(p2Enabled);
         if (data == null) return false;
 
-        theme = data.theme;
-        pauseDuringMenus = data.pauseDuringMenus;
-        p2Enabled = data.p2Enabled && data.p2 != null;
+        // Theme and "pause during menus" are NOT restored from the save -- they're the current
+        // session's own settings (see SaveData's class doc), left exactly as the player already
+        // has them.
+        // p2Enabled likewise comes from the CURRENT session (whatever was chosen on the main
+        // menu before Play/Load), not from the save -- "save state must depend on whether it's
+        // played in P1 or P2", i.e. on how THIS session is set up, not how it was set up when it
+        // was saved. Loading a solo save into a 2-player session just gives P2 a fresh character
+        // (no saved progress to restore); loading a 2-player save solo just leaves data.p2 unused.
         menuItems[2] = "Player 2: " + (p2Enabled ? "ON" : "OFF");
 
         arena = new Arena(theme);
@@ -348,9 +421,15 @@ public class GamePanel extends JPanel {
 
         walletP2.reset();
         if (p2Enabled) {
-            Player p2 = new Player(2, data.p2.playerClass, cx + 40, cy + 140);
-            applySavedProgress(p2, data.p2, walletP2);
-            players.add(p2);
+            if (data.p2 != null) {
+                Player p2 = new Player(2, data.p2.playerClass, cx + 40, cy + 140);
+                applySavedProgress(p2, data.p2, walletP2);
+                players.add(p2);
+            } else {
+                // This session wants P2, but the save has no P2 progress (it was a solo save) --
+                // P2 just starts fresh rather than being blocked or borrowing P1's data.
+                players.add(new Player(2, PlayerClass.TANK, cx + 40, cy + 140));
+            }
         }
 
         shopOpen = false;
@@ -363,7 +442,7 @@ public class GamePanel extends JPanel {
         // enchant roll, a risky fight, or any other mistake can't be undone by just reloading the
         // same save over and over. If they want another checkpoint to fall back on, they need to
         // save again -- from whatever new position they're now committed to.
-        SaveManager.delete();
+        SaveManager.delete(p2Enabled);
         return true;
     }
 
@@ -388,12 +467,10 @@ public class GamePanel extends JPanel {
     }
 
     /** Snapshots the current run into a SaveData -- see that class's doc for exactly what is and
-     *  isn't captured. */
+     *  isn't captured (notably: NOT theme or pauseDuringMenus -- those are session settings). */
     private SaveData buildSaveData() {
         SaveData data = new SaveData();
         data.p2Enabled = p2Enabled;
-        data.theme = theme;
-        data.pauseDuringMenus = pauseDuringMenus;
         data.currentWave = waveManager.currentWave;
         data.wavesCompleted = waveManager.wavesCompleted;
         data.bossKillCount = waveManager.bossKillCount;
@@ -526,7 +603,7 @@ public class GamePanel extends JPanel {
                     lastSaveLocked = true; // greyed out -- just explain why, don't touch the disk
                 } else {
                     lastSaveLocked = false;
-                    lastSaveSucceeded = SaveManager.save(buildSaveData());
+                    lastSaveSucceeded = SaveManager.save(buildSaveData(), p2Enabled);
                 }
                 saveMessageUntil = System.currentTimeMillis() + 1500;
             } else {
@@ -608,7 +685,7 @@ public class GamePanel extends JPanel {
             case 2 -> { // Enchanting
                 lines.add("Stand inside the dashed ring around the Enchanting Center and press");
                 lines.add("your interact key (E for P1, P for P2) to open the enchant wheel.");
-                lines.add("Switch which gear slot you're enchanting with [V] Sword / [M] Bow, or");
+                lines.add("Switch which gear slot you're enchanting with [V] Dagger / [M] Bow, or");
                 lines.add("[Z][X][C] (P1) / [,][.][/](P2) for Helmet/Chest/Legs.");
                 lines.add("");
                 lines.add("Spin the wheel to roll a random Tier I-V enchant for that slot. Pricier");
@@ -716,9 +793,18 @@ public class GamePanel extends JPanel {
             boolean justPressed = (p.playerNumber == 1) ? input.p1AttackJustPressed() : input.p2AttackJustPressed();
 
             if (p.selectedSlot == 0) {
-                if (p.tryAttack(justPressed, now)) {
+                // A Ranger with no arrows left auto-switches to the Combat Pin, which has its
+                // own much faster, fully independent cooldown -- see tryCombatPinAttack().
+                if (p.playerClass == PlayerClass.RANGER && p.ammo <= 0) {
+                    if (p.tryCombatPinAttack(justPressed, now)) fireCombatPin(p, now);
+                } else if (p.tryAttack(justPressed, now)) {
                     performPlayerAttack(p, now);
                 }
+            } else if (p.selectedSlot == 3 && p.playerClass == PlayerClass.RANGER) {
+                // Manual Combat Pin, on demand even with arrows left. Doesn't reset back to
+                // slot 0 like the other utility items do -- at a ~0.1s cooldown, forcing a
+                // slot re-select before every single shot would make it unusable.
+                if (p.tryCombatPinAttack(justPressed, now)) fireCombatPin(p, now);
             } else {
                 if (p.tryUtilityAction(justPressed, now)) {
                     useSelectedItem(p, now);
@@ -897,7 +983,7 @@ public class GamePanel extends JPanel {
     /** Same catalog/prices for both classes; only the weapon word and arrow row change. */
     private List<ShopItem> buildShopItems(Player p, Wallet w) {
         List<ShopItem> items = new ArrayList<>();
-        String weaponWord = p.playerClass == PlayerClass.TANK ? "Sword" : "Bow";
+        String weaponWord = p.playerClass == PlayerClass.TANK ? "Dagger" : "Bow";
 
         WeaponTier next = p.weaponTier.next();
         if (next != null) {
@@ -956,6 +1042,19 @@ public class GamePanel extends JPanel {
     private void awardWaveCompletionOrbs() {
         int delta = waveManager.wavesCompleted - lastWavesCompletedSeen;
         if (delta <= 0) return;
+
+        // "The remaining downed player can be resurrected in the next round if that round is
+        // successful" -- reaching here means a wave WAS just cleared (with at least one player
+        // still standing, or the game would already be GAME_OVER), so anyone who went down
+        // during it comes back now. Keeps their gear/upgrades/ammo as-is -- only alive + HP are
+        // restored, same as any other wave transition already does for the players who made it.
+        for (Player p : players) {
+            if (!p.alive) {
+                p.alive = true;
+                p.health = p.maxHealth;
+            }
+        }
+
         for (int i = 0; i < delta; i++) {
             // "winning the 10 coal is won for both players" -- flat base, both wallets get the full +10
             walletP1.addDarkOrbs(Wallet.DARK_ORBS_PER_WAVE);
@@ -975,9 +1074,10 @@ public class GamePanel extends JPanel {
                 if (growLevel > 0) {
                     p.grantPermanentMaxHealth(2 * growLevel);
                 }
-                // Reforged: "+1 damage per wave completed, per level (stackable)"
+                // Reforged: "+2 damage per wave completed, per level (stackable)" -- was +1,
+                // buffed to +3, now nerfed again to +2.
                 int reforgedLevel = p.upgradeLevel(UpgradeType.REFORGED);
-                if (reforgedLevel > 0) p.reforgedDamageBonus += reforgedLevel;
+                if (reforgedLevel > 0) p.reforgedDamageBonus += 2 * reforgedLevel;
             }
         }
         // A wave (or several, if this frame skipped some) was just cleared -- refill everyone's
@@ -988,14 +1088,13 @@ public class GamePanel extends JPanel {
         lastWavesCompletedSeen = waveManager.wavesCompleted;
     }
 
-    /** Slot 0 (weapon) is handled by performPlayerAttack; this covers slots 1-3. */
+    /** Slot 0 (weapon) is handled above by performPlayerAttack/fireCombatPin; this covers
+     *  slots 1-2. Slot 3 (Ranger's Combat Pin) is dispatched separately (see the main loop),
+     *  since it needs its own cooldown and must not reset back to slot 0 each shot. */
     private void useSelectedItem(Player p, long now) {
         switch (p.selectedSlot) {
             case 1 -> p.useMedicKit(now);
             case 2 -> p.activateShield(now);
-            case 3 -> { // Ranger's manual dagger -- melee on demand even with arrows left
-                if (p.playerClass == PlayerClass.RANGER) meleeAttack(p, p.daggerDamage(), Player.DAGGER_RANGE, false, now);
-            }
         }
     }
 
@@ -1024,13 +1123,20 @@ public class GamePanel extends JPanel {
         if (rng.nextDouble() < Wallet.SILVER_ORB_DROP_CHANCE) w.addSilverOrbs(1);
         // 30 EXP per kill at wave 1, +5 for every wave progressed since -- resets to 30 whenever
         // the game (and wave counter) resets, since this is computed off the live wave number.
-        killer.addExp(30 + 5 * (waveManager.currentWave - 1));
+        // Bosses are worth 5x this, on top of everything else a boss kill already grants above.
+        int baseExp = 30 + 5 * (waveManager.currentWave - 1);
+        killer.addExp(enemy.boss ? baseExp * 5 : baseExp);
 
-        // Recovery: on-kill sustain -- Tank heals HP, Ranger recovers arrows, both per level.
+        // Recovery: on-kill sustain -- Ranger recovers arrows per level (unchanged); Tank now
+        // heals a flat 3% of current total Max HP per kill instead of +2 HP/level -- doesn't
+        // scale further with additional Recovery levels beyond the first (assumption: the
+        // request dropped "per level" for this one, unlike every other upgrade, so treating it
+        // as a flat percentage rather than 3%-per-level, which would spiral fast at high levels).
         int recoveryLevel = killer.upgradeLevel(UpgradeType.RECOVERY);
         if (recoveryLevel > 0) {
             if (killer.playerClass == PlayerClass.TANK) {
-                killer.health = Math.min(killer.maxHealth, killer.health + 2 * recoveryLevel);
+                int healAmount = (int) Math.round(killer.maxHealth * 0.03);
+                killer.health = Math.min(killer.maxHealth, killer.health + healAmount);
             } else {
                 killer.ammo += recoveryLevel;
             }
@@ -1039,35 +1145,76 @@ public class GamePanel extends JPanel {
 
     // ------------------------------------------------------------- combat
 
+    private static final double ARROW_SPEED_PX = 9.0; // unchanged -- the "slow" reference point
+
+    /** performPlayerAttack is only reached via tryAttack(), which already refuses to fire for a
+     *  Ranger with no arrows left -- that case is routed straight to fireCombatPin() instead
+     *  (see the main loop), so this only ever fires the Dagger (Tank) or an arrow (Ranger). */
     private void performPlayerAttack(Player p, long nowMs) {
         if (p.playerClass == PlayerClass.TANK) {
-            meleeAttack(p, p.swordDamage(), p.playerClass.range, true, nowMs);
-        } else { // RANGER: bow shot, or dagger swing if it just ran out of arrows
-            if (p.usedDaggerLastAttack) {
-                meleeAttack(p, p.daggerDamage(), Player.DAGGER_RANGE, false, nowMs);
-            } else {
-                double speedMult = 1 + p.arrowSpeedBonusPercent() / 100.0; // Arrow Speed enchant
-                Projectile proj = new Projectile(
-                        p.centerX(), p.centerY(),
-                        p.facingX * 9.0 * speedMult, p.facingY * 9.0 * speedMult,
-                        p.arrowDamage(), 0, true);
-                proj.ownerPlayerNumber = p.playerNumber;
-                proj.originX = p.centerX();
-                proj.originY = p.centerY();
-                projectiles.add(proj);
-            }
+            fireDagger(p, nowMs);
+        } else {
+            fireArrow(p, nowMs);
         }
+    }
+
+    /** Ranger's bow shot -- unchanged from before the weapon remake. */
+    private void fireArrow(Player p, long nowMs) {
+        double speedMult = 1 + p.arrowSpeedBonusPercent() / 100.0; // Arrow Speed enchant
+        Projectile proj = new Projectile(
+                p.centerX(), p.centerY(),
+                p.facingX * ARROW_SPEED_PX * speedMult, p.facingY * ARROW_SPEED_PX * speedMult,
+                p.arrowDamage(), 0, true);
+        proj.ownerPlayerNumber = p.playerNumber;
+        proj.originX = p.centerX();
+        proj.originY = p.centerY();
+        proj.knockback = 8.0 * speedMult; // Arrow Speed enchant boosts knockback too
+        projectiles.add(proj);
+    }
+
+    /** Tank's thrown Dagger -- the old melee sword swing's full replacement. Short range (dissipates
+     *  on its own well before hitting a wall in the open), medium fire rate, small knockback, a
+     *  little smaller than an arrow. */
+    private void fireDagger(Player p, long nowMs) {
+        Projectile proj = new Projectile(
+                p.centerX(), p.centerY(),
+                p.facingX * Player.DAGGER_SPEED_PX, p.facingY * Player.DAGGER_SPEED_PX,
+                p.daggerDamage(), 0, true);
+        proj.ownerPlayerNumber = p.playerNumber;
+        proj.originX = p.centerX();
+        proj.originY = p.centerY();
+        proj.maxRange = Player.DAGGER_MAX_RANGE_PX;
+        proj.knockback = Player.DAGGER_KNOCKBACK;
+        proj.radius = Player.DAGGER_PROJECTILE_RADIUS;
+        projectiles.add(proj);
+    }
+
+    /** Ranger's Combat Pin -- the old melee dagger-fallback's full replacement. Tiny range, very
+     *  fast fire rate (its own cooldown, independent of the bow's), no knockback at all, a lot
+     *  smaller than the Dagger. Fired both automatically (out of arrows) and on demand (slot 3). */
+    private void fireCombatPin(Player p, long nowMs) {
+        Projectile proj = new Projectile(
+                p.centerX(), p.centerY(),
+                p.facingX * Player.COMBAT_PIN_SPEED_PX, p.facingY * Player.COMBAT_PIN_SPEED_PX,
+                p.combatPinDamage(), 0, true);
+        proj.ownerPlayerNumber = p.playerNumber;
+        proj.originX = p.centerX();
+        proj.originY = p.centerY();
+        proj.maxRange = Player.COMBAT_PIN_MAX_RANGE_PX;
+        proj.knockback = Player.COMBAT_PIN_KNOCKBACK; // 0 -- "absolutely no knockback"
+        proj.radius = Player.COMBAT_PIN_PROJECTILE_RADIUS;
+        projectiles.add(proj);
     }
 
     /** Unified Critical: flat 3%/level chance to double the hit, same mechanic for both classes now
      *  (the Ranger's old distance-based bonus barely moved the needle, so it's gone). Lucky Strike
-     *  (a sword-only enchant) stacks its own chance on top, but only for genuine sword swings. */
+     *  (a Dagger-only enchant) stacks its own chance on top, but only for the Tank's Dagger hits. */
     private record CritResult(int damage, boolean crit) {}
 
-    private CritResult applyCritical(Player p, int baseDamage, boolean isSwordSwing) {
+    private CritResult applyCritical(Player p, int baseDamage, boolean isDaggerThrow) {
         int critLevel = p.upgradeLevel(UpgradeType.CRITICAL);
         double chance = critLevel * 0.03;
-        if (isSwordSwing) chance += p.luckyStrikeBonusPercent() / 100.0;
+        if (isDaggerThrow) chance += p.luckyStrikeBonusPercent() / 100.0;
         if (chance > 0 && rng.nextDouble() < chance) {
             return new CritResult(baseDamage * 2, true);
         }
@@ -1084,34 +1231,16 @@ public class GamePanel extends JPanel {
         damagePopups.add(new DamagePopup(x, y - 12, String.valueOf(amount), color, nowMs, crit));
     }
 
-    private void meleeAttack(Player p, int damage, int range, boolean isSwordSwing, long nowMs) {
-        for (Enemy enemy : waveManager.getEnemies()) {
-            if (!enemy.alive) continue;
-            double dist = Math.hypot(enemy.centerX() - p.centerX(), enemy.centerY() - p.centerY());
-            if (dist <= range) {
-                // Same defensive isolation as the arrow-hit path in updateProjectiles() -- a bad
-                // hit logs instead of crashing the whole game.
-                try {
-                    CritResult result = applyCritical(p, damage, isSwordSwing);
-                    enemy.damage(result.damage());
-                    enemy.applyKnockback(p.centerX(), p.centerY(), 14.0);
-                    spawnDamagePopup(enemy.centerX(), enemy.centerY(), result.damage(), result.crit(), nowMs);
-                    if (!enemy.alive) onEnemyKilled(enemy, p);
-                } catch (RuntimeException ex) {
-                    System.err.println("Melee-hit resolution threw for " + enemy.type
-                            + " at (" + enemy.x + "," + enemy.y + "):");
-                    ex.printStackTrace();
-                }
-            }
-        }
-    }
-
+    /** Weapon remake: melee swings don't exist anymore -- the Dagger, the arrow, and the Combat
+     *  Pin are all resolved here, as projectile hits, including the Dagger's own short
+     *  self-imposed range (see Projectile.maxRange / traveledDistance()). */
     private void updateProjectiles(long nowMs) {
         List<Projectile> toRemove = new ArrayList<>();
         for (Projectile proj : projectiles) {
             proj.update();
             if (arena.isObstacleAtWorld(proj.x, proj.y) || proj.x < 0 || proj.y < 0
-                    || proj.x > arena.worldWidth || proj.y > arena.worldHeight) {
+                    || proj.x > arena.worldWidth || proj.y > arena.worldHeight
+                    || proj.traveledDistance() > proj.maxRange) {
                 toRemove.add(proj);
                 continue;
             }
@@ -1119,20 +1248,22 @@ public class GamePanel extends JPanel {
                 for (Enemy enemy : waveManager.getEnemies()) {
                     if (!enemy.alive) continue;
                     if (proj.bounds().intersects(enemy.bounds())) {
-                        // Defensive: this exact moment (an arrow landing -- damage, knockback,
+                        // Defensive: this exact moment (a shot landing -- damage, knockback,
                         // possible kill) is where a reported crash happened. Isolating it means a
-                        // bad hit logs and the arrow is still consumed, instead of taking the
+                        // bad hit logs and the shot is still consumed, instead of taking the
                         // whole game down.
                         try {
                             Player owner = playerByNumber(proj.ownerPlayerNumber);
-                            CritResult result = owner != null ? applyCritical(owner, proj.damage, false) : new CritResult(proj.damage, false);
-                            double knockbackMult = owner != null ? 1 + owner.arrowSpeedBonusPercent() / 100.0 : 1.0;
+                            boolean isDaggerThrow = owner != null && owner.playerClass == PlayerClass.TANK;
+                            CritResult result = owner != null
+                                    ? applyCritical(owner, proj.damage, isDaggerThrow)
+                                    : new CritResult(proj.damage, false);
                             enemy.damage(result.damage());
-                            enemy.applyKnockback(proj.x, proj.y, 8.0 * knockbackMult); // Arrow Speed enchant boosts knockback too
+                            if (proj.knockback > 0) enemy.applyKnockback(proj.x, proj.y, proj.knockback);
                             spawnDamagePopup(enemy.centerX(), enemy.centerY(), result.damage(), result.crit(), nowMs);
                             if (!enemy.alive) onEnemyKilled(enemy, owner);
                         } catch (RuntimeException ex) {
-                            System.err.println("Arrow-hit resolution threw for " + enemy.type
+                            System.err.println("Projectile-hit resolution threw for " + enemy.type
                                     + " at (" + enemy.x + "," + enemy.y + "):");
                             ex.printStackTrace();
                         }
@@ -1218,7 +1349,7 @@ public class GamePanel extends JPanel {
         g.drawString("LAST STAND", 300, 150);
 
         g.setFont(new Font("SansSerif", Font.PLAIN, 26));
-        boolean saveExists = SaveManager.saveExists();
+        boolean saveExists = SaveManager.saveExists(p2Enabled); // reflects the CURRENT P1/P2 toggle's own save file
         for (int i = 0; i < menuItems.length; i++) {
             boolean disabled = i == 1 && !saveExists; // "Load Save" grayed out with no save yet
             g.setColor(disabled ? new Color(80, 80, 80) : (i == menuIndex ? Color.YELLOW : Color.WHITE));
@@ -1236,6 +1367,41 @@ public class GamePanel extends JPanel {
                 Constants.SCREEN_HEIGHT - 12);
 
         if (confirmingLoad) drawConfirmLoad(g);
+        if (confirmingNewGame) drawConfirmNewGame(g);
+    }
+
+    /** "Play" Use-save-or-fresh prompt, shown only when a save exists. Defaults to keeping it. */
+    private void drawConfirmNewGame(Graphics2D g) {
+        g.setColor(Color.BLACK);
+        g.fillRect(0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT);
+
+        g.setFont(new Font("SansSerif", Font.BOLD, 26));
+        g.setColor(Color.WHITE);
+        String title = "You have a save. Use it, or start fresh?";
+        g.drawString(title, (Constants.SCREEN_WIDTH - g.getFontMetrics().stringWidth(title)) / 2, 220);
+
+        g.setFont(new Font("SansSerif", Font.PLAIN, 17));
+        g.setColor(new Color(200, 220, 255));
+        g.drawString(pendingNewGameSummary,
+                (Constants.SCREEN_WIDTH - g.getFontMetrics().stringWidth(pendingNewGameSummary)) / 2, 255);
+
+        g.setFont(new Font("SansSerif", Font.PLAIN, 15));
+        g.setColor(Color.LIGHT_GRAY);
+        String warn = "Starting fresh permanently deletes that save.";
+        g.drawString(warn, (Constants.SCREEN_WIDTH - g.getFontMetrics().stringWidth(warn)) / 2, 285);
+
+        g.setFont(new Font("SansSerif", Font.BOLD, 22));
+        int midX = Constants.SCREEN_WIDTH / 2;
+        g.setColor(confirmNewGameKeepSave ? Color.YELLOW : Color.LIGHT_GRAY);
+        g.drawString(confirmNewGameKeepSave ? "> Use previous save" : "  Use previous save", midX - 200, 345);
+        g.setColor(!confirmNewGameKeepSave ? new Color(255, 110, 110) : Color.LIGHT_GRAY);
+        g.drawString(!confirmNewGameKeepSave ? "> Start fresh (delete it)" : "  Start fresh (delete it)",
+                midX + 20, 345);
+
+        g.setFont(new Font("SansSerif", Font.PLAIN, 14));
+        g.setColor(Color.GRAY);
+        String footer = "A/D or Left/Right to choose, SPACE/ENTER to confirm, ESC to cancel";
+        g.drawString(footer, (Constants.SCREEN_WIDTH - g.getFontMetrics().stringWidth(footer)) / 2, 420);
     }
 
     /** "Load Save" Yes/No prompt. Loading consumes the save, so this defaults to No. */
@@ -1314,7 +1480,7 @@ public class GamePanel extends JPanel {
         g.setColor(Color.WHITE);
         g.drawString("Class: " + choice.name(), px, 280);
         g.drawString("HP: " + choice.maxHealth, px, 305);
-        g.drawString(choice.attackType == AttackType.MELEE ? "Melee (sword)" : "Ranged (bow)", px, 330);
+        g.drawString(choice.attackType == AttackType.MELEE ? "Dagger (thrown)" : "Ranged (bow)", px, 330);
     }
 
     private void renderPlaying(Graphics2D g) {

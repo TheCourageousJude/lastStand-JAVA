@@ -106,6 +106,17 @@ public class WaveManager {
         return 1 + bossKillCount * (bossKillCount + 1) / 2;
     }
 
+    // "+11% enemy HP per boss defeated" -- compounding, uncapped (was 18% -- "definitely very,
+    // very tough"). Players are expected to keep pace through the same boss kills via Armored's
+    // boss-defense stacks, Grow's per-wave HP, and their own enchants/upgrades, rather than this
+    // being tuned to stay flat on its own.
+    private static final double HP_PER_BOSS_KILL = 0.11;
+
+    /** Enemy HP multiplier from bosses defeated so far -- compounds: 1.11^bossKillCount. */
+    public double bossKillHpMultiplier() {
+        return Math.pow(1 + HP_PER_BOSS_KILL, bossKillCount);
+    }
+
     /**
      * Opens the right number of portals for this wave, and -- fixing the old
      * "2+ types coming out of one portal" inconsistency -- assigns each open
@@ -163,7 +174,8 @@ public class WaveManager {
         EnemyType type = portalTypeAssignment.get(portal); // consistent per portal for the whole wave
         int size = bossWave ? 46 : 30;
         double[] pos = arena.randomSpawnNear(portal, size);
-        enemies.add(new Enemy(type, bossWave, pos[0], pos[1], currentWave, bossDamageBonus()));
+        enemies.add(new Enemy(type, bossWave, pos[0], pos[1], currentWave,
+                bossDamageBonus(), bossKillHpMultiplier()));
         enemiesSpawned++;
     }
 }

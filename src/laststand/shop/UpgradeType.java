@@ -25,7 +25,7 @@ public enum UpgradeType {
     },
     RECOVERY(new Color(230, 210, 60)) {
         @Override public String effectFor(PlayerClass cls) {
-            return cls == PlayerClass.TANK ? "+2 HP recovered per enemy slain, per level"
+            return cls == PlayerClass.TANK ? "Restores 3% of your total Max HP per enemy slain"
                     : "+1 arrow recovered per enemy slain, per level";
         }
     },
@@ -47,7 +47,7 @@ public enum UpgradeType {
         @Override public String effectFor(PlayerClass cls) { return "+2 max HP per wave cleared, per level (stacks forever)"; }
     },
     REFORGED(new Color(70, 160, 220)) {
-        @Override public String effectFor(PlayerClass cls) { return "+1 damage per wave cleared, per level (stacks forever)"; }
+        @Override public String effectFor(PlayerClass cls) { return "+2 damage per wave cleared, per level (stacks forever)"; }
     };
 
     public static final int MAX_LEVEL = 20;

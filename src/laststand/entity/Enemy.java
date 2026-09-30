@@ -24,8 +24,9 @@ public class Enemy extends Entity {
     private static final int HP_PER_WAVE = 10; // was +5 -- "this is gonna be tough"
     private static final double SPEED_INCREASE_PER_5_WAVES = 0.10; // was 0.15 -- see also EnemyType's doc comment
 
-    public Enemy(EnemyType type, boolean boss, double x, double y, int waveNumber, int globalBossDamageBonus) {
-        super(x, y, boss ? 46 : 30, scaledHealth(type, boss, waveNumber), type.color);
+    public Enemy(EnemyType type, boolean boss, double x, double y, int waveNumber,
+                 int globalBossDamageBonus, double bossKillHpMult) {
+        super(x, y, boss ? 46 : 30, scaledHealth(type, boss, waveNumber, bossKillHpMult), type.color);
         this.type = type;
         this.boss = boss;
         this.weightClass = type.weightClass;
@@ -45,9 +46,9 @@ public class Enemy extends Entity {
         }
     }
 
-    private static int scaledHealth(EnemyType type, boolean boss, int waveNumber) {
+    private static int scaledHealth(EnemyType type, boolean boss, int waveNumber, double bossKillHpMult) {
         int waveScaledBase = type.baseHealth + HP_PER_WAVE * (waveNumber - 1);
-        return (int) Math.round(waveScaledBase * (boss ? BOSS_HEALTH_MULT : 1.0));
+        return (int) Math.round(waveScaledBase * (boss ? BOSS_HEALTH_MULT : 1.0) * bossKillHpMult);
     }
 
     @Override

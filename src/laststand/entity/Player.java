@@ -29,10 +29,27 @@ public class Player extends Entity {
     public double facingX = 0, facingY = -1; // default facing "up"
     public int facingSide = 1;               // 1 = east/right, -1 = west/left (weapon sits on this side)
     private long lastAttackAt = -999999;
+    private long lastCombatPinAt = -999999;
 
-    // Fired last attack using the Ranger's emergency dagger (out of arrows)? Read by GamePanel.
-    public boolean usedDaggerLastAttack = false;
-    public static final int DAGGER_RANGE = 65; // bumped up a bit from 50
+    // -------------------------------------------------------------------------------------
+    // Weapon remake: melee swings don't exist anymore for either class -- everything is now a
+    // thrown/fired projectile (see GamePanel's fireDagger/fireArrow/fireCombatPin).
+    //   - Tank's old sword swing is now an infinite-ammo thrown DAGGER: short range, medium
+    //     fire rate, small knockback, a bit smaller than an arrow.
+    //   - Ranger's old melee dagger-fallback is now an infinite-ammo COMBAT PIN: tiny range,
+    //     very fast fire rate, no knockback at all, tinier than the Dagger.
+    // Tuned-by-feel starting numbers -- easy to retune, all in one place.
+    // -------------------------------------------------------------------------------------
+    public static final double DAGGER_MAX_RANGE_PX = 3.0 * Constants.TILE_SIZE; // ~3.0 tiles (was 1.5)
+    public static final double DAGGER_SPEED_PX = 6.0;    // px/frame -- a controlled toss
+    public static final double DAGGER_KNOCKBACK = 4.0;   // small, vs. the bow's ~8
+    public static final int DAGGER_PROJECTILE_RADIUS = 4; // a little smaller than an arrow (5)
+
+    public static final long COMBAT_PIN_COOLDOWN_MS = 100; // independent of the bow's cooldown
+    public static final double COMBAT_PIN_MAX_RANGE_PX = 1.75 * Constants.TILE_SIZE; // ~1.75 tiles (was 0.75)
+    public static final double COMBAT_PIN_SPEED_PX = 10.0; // faster than the Dagger -- a flick, not a throw
+    public static final double COMBAT_PIN_KNOCKBACK = 0.0; // none at all
+    public static final int COMBAT_PIN_PROJECTILE_RADIUS = 2; // a lot smaller than the Dagger (4)
 
     // Shop-purchased gear
     public WeaponTier weaponTier = WeaponTier.WOODEN;
@@ -65,7 +82,7 @@ public class Player extends Entity {
     public boolean enchanting = false; // frozen (can't move/attack) while true; see GamePanel
     public EnchantCategory enchantCategory = EnchantCategory.HELMET;
 
-    // Each of the 5 gear categories (Helmet/Chest/Legs/Sword/Bow) has its OWN independent
+    // Each of the 5 gear categories (Helmet/Chest/Legs/Dagger/Bow) has its OWN independent
     // enchant set -- e.g. your helmet and leggings can have different Regen levels.
     public final Map<EnchantCategory, Map<EnchantType, Integer>> enchants = new EnumMap<>(EnchantCategory.class);
     private final Random enchantRng = new Random();
@@ -81,7 +98,7 @@ public class Player extends Entity {
             {EnchantCategory.HELMET, EnchantCategory.CHESTPLATE, EnchantCategory.LEGGINGS};
 
     /** Sums this enchant type's value across every category it can appear on -- for armor types
-     *  (Regen/Protection/HP Boost) that means summed across all 3 pieces; for Sword/Bow-specific
+     *  (Regen/Protection/HP Boost) that means summed across all 3 pieces; for Dagger/Bow-specific
      *  types it's just that one category. */
     public double enchantValue(EnchantType type) {
         double sum = 0;
@@ -93,7 +110,22 @@ public class Player extends Entity {
         return sum;
     }
 
-    /** Armor pieces are open to everyone; Sword only makes sense for the Tank, Bow only for the Ranger. */
+    /** How enchanted one gear slot is, as a Tier 1-5 (0 = nothing rolled into it at all) --
+     *  matches the same Tier 1-5 the enchant wheel itself rolls (see EnchantSpinOption), for
+     *  coloring the background behind that slot's icon in the hotbar/buff bar (HUD). A slot's 3
+     *  enchant types each cap at amplifier III, so the raw sum of amplifiers ranges 0-9; that's
+     *  bucketed down into the same 5 tiers two amplifier-points at a time (9 -> Tier 5, 7-8 ->
+     *  Tier 4, and so on) since there's no single stored "last roll" per slot, only the
+     *  cumulative amplifiers from however many spins landed there over time. */
+    public int enchantTierFor(EnchantCategory category) {
+        int sum = 0;
+        for (int amp : enchants.getOrDefault(category, Map.of()).values()) sum += amp;
+        return sum <= 0 ? 0 : Math.min(5, (sum + 1) / 2);
+    }
+
+    /** Armor pieces are open to everyone; Dagger only makes sense for the Tank, Bow only for the Ranger.
+     *  (Internally still EnchantCategory.SWORD -- kept as-is so old saves' enchant slots still
+     *  resolve correctly; only the displayed name changed, see EnchantUI.) */
     public boolean canUseEnchantCategory(EnchantCategory category) {
         if (category.isArmorPiece()) return true;
         if (category == EnchantCategory.SWORD) return playerClass == PlayerClass.TANK;
@@ -103,7 +135,7 @@ public class Player extends Entity {
     /**
      * "To automatically switch back to main weapon, they must deselect their current pick" --
      * pressing the same category's key a second time toggles back to the player's one main
-     * weapon slot (Sword for Tank, Bow for Ranger -- "not 2 slots, that is the main weapon
+     * weapon slot (Dagger for Tank, Bow for Ranger -- "not 2 slots, that is the main weapon
      * itself"), instead of doing nothing.
      */
     public void setEnchantCategory(EnchantCategory category) {
@@ -279,8 +311,16 @@ public class Player extends Entity {
         return upgradeLevels.getOrDefault(type, 0);
     }
 
+    /** Picks 3 upgrades to offer, at random, EXCLUDING anything already at MAX_LEVEL -- a maxed
+     *  perk (Lv20/20) must never occupy one of the 3 slots; something still available takes its
+     *  place immediately instead. Only falls back to including maxed types if literally every
+     *  perk is maxed (nothing else left to offer), so this can never come up short of 3. */
     public void rerollPerks() {
-        List<UpgradeType> pool = new ArrayList<>(List.of(UpgradeType.values()));
+        List<UpgradeType> pool = new ArrayList<>();
+        for (UpgradeType type : UpgradeType.values()) {
+            if (upgradeLevel(type) < UpgradeType.MAX_LEVEL) pool.add(type);
+        }
+        if (pool.size() < 3) pool = new ArrayList<>(List.of(UpgradeType.values())); // everything maxed -- nothing else to offer
         Collections.shuffle(pool);
         offeredPerks.clear();
         offeredPerks.addAll(pool.subList(0, 3));
@@ -302,7 +342,8 @@ public class Player extends Entity {
     // upgrade never gains Defense just from a boss dying nearby.
     public int bossDefenseStacks = 0;
 
-    // "Reforged... +1 damage per wave completed, per level (stackable)" -- a flat, ever-growing
+    // "Reforged... +2 damage per wave completed, per level (stackable)" -- was +1, buffed to
+    // +3, now nerfed again to +2 -- a flat, ever-growing
     // damage bonus applied to every attack, replacing Dodge's old evasion role.
     public int reforgedDamageBonus = 0;
 
@@ -317,44 +358,41 @@ public class Player extends Entity {
 
     /**
      * Preserved Power rework -- the old "every 4 LVL" version scaled unbounded and got "too broken".
-     * Now two separate, capped tracks based on fixed LVL milestones instead of a flat divisor:
-     *  - HP:     +2 Max HP per level at each of 50 milestones (5,15,25,...,495) -- caps at +100/level
-     *  - Damage: +1 damage per level at each of 50 milestones (10,20,30,...,500) -- caps at +50/level
-     * Both scale by how many levels of the perk itself are purchased (up to UpgradeType.MAX_LEVEL),
-     * so the absolute ceiling is +2,000 Max HP / +1,000 damage at Preserved Power level 20 and LVL
-     * 500 (the new hard cap on Player.level). Both still rise and fall live as the player's LVL
-     * balance changes -- gaining LVL raises them, spending LVL on enchant spins lowers them.
+     * Then reworked again to +2 HP / +1 damage every 10 LVL milestones (still "too broken").
+     * Now unified: BOTH HP and damage are +1 per level at each of 25 milestones (20,40,...,500)
+     * -- same increment, same interval, for both stats. Both scale by how many levels of the
+     * perk itself are purchased (up to UpgradeType.MAX_LEVEL), so the absolute ceiling is now
+     * +500 Max HP / +500 damage at Preserved Power level 20 and LVL 500 (down from +2,000/+1,000).
+     * Both still rise and fall live as the player's LVL balance changes -- gaining LVL raises
+     * them, spending LVL on enchant spins lowers them.
      */
-    private static int preservedPowerHpMilestones(int lvl) {
-        if (lvl < 5) return 0;
-        return (Math.min(lvl, 495) - 5) / 10 + 1;
-    }
-
-    private static int preservedPowerDmgMilestones(int lvl) {
-        return Math.min(lvl, 500) / 10;
+    private static int preservedPowerMilestones(int lvl) {
+        return Math.min(lvl, 500) / 20;
     }
 
     private int preservedPowerDamageBonus() {
-        return preservedPowerDmgMilestones(level) * upgradeLevel(UpgradeType.PRESERVED_POWER);
+        return preservedPowerMilestones(level) * upgradeLevel(UpgradeType.PRESERVED_POWER);
     }
 
     /** Re-derives preservedPowerHPBonus from the current LVL balance -- called from addExp(),
      *  trySpendLevel(), and tryBuyPerk() (anything that can change level or the perk's own level). */
     private void refreshPreservedPowerBonus() {
-        preservedPowerHPBonus = 2 * preservedPowerHpMilestones(level) * upgradeLevel(UpgradeType.PRESERVED_POWER);
+        preservedPowerHPBonus = preservedPowerMilestones(level) * upgradeLevel(UpgradeType.PRESERVED_POWER);
         recomputeMaxHealth();
     }
 
-    private static final int MELEE_DAMAGE_CAP = 80; // "until it caps at 80"
+    private static final int THROWN_DAMAGE_CAP = 80; // "until it caps at 80" -- applies to both thrown weapons now
 
-    /** Base weapon damage (tier-scaled) + Preserved Power's dynamic bonus + Sword Damage enchant +
-     *  Reforged, capped at 80. */
-    public int swordDamage() {
+    /** Base weapon damage (tier-scaled) + Preserved Power's dynamic bonus + Dagger Damage enchant +
+     *  Reforged, capped at 80. Tank's thrown Dagger -- the old melee sword swing's replacement,
+     *  same damage formula, same enchant hook (still under EnchantCategory.SWORD internally, so
+     *  old saves/enchant slots keep working -- only the display name changed to "Dagger Damage"). */
+    public int daggerDamage() {
         int base = effectiveDamage();
         int bonus = preservedPowerDamageBonus()
                 + (int) Math.round(enchantValue(EnchantType.SWORD_DAMAGE))
                 + reforgedDamageBonus;
-        return Math.min(MELEE_DAMAGE_CAP, base + bonus);
+        return Math.min(THROWN_DAMAGE_CAP, base + bonus);
     }
 
     /** Base weapon damage (tier-scaled) + Preserved Power's dynamic bonus + Arrow Damage enchant +
@@ -369,15 +407,15 @@ public class Player extends Entity {
     }
 
     /**
-     * "Punitive stats so the enemies only tickle" -- the dagger is 33% of the Ranger's
-     * *effective* bow damage (tier + Innate Prowess included), not a flat number, so it scales
-     * down proportionally as the bow gets stronger instead of falling further behind it.
-     * Also gets Reforged, capped at 80 same as the sword. (Subject to change -- flagged as a
-     * placeholder ahead of a possible throwable-darts rework.)
+     * "Punitive stats so the enemies only tickle" -- the Combat Pin (formerly the melee dagger
+     * fallback, now a tiny fired sidearm) is 20% of the Ranger's *effective* bow damage (tier +
+     * Innate Prowess included), not a flat number, so it scales down proportionally as the bow
+     * gets stronger instead of falling further behind it. Also gets Reforged, capped at 80 same
+     * as the Dagger. Nerfed from 33% to 20% alongside the range buff (0.75 -> 1.75 tiles).
      */
-    public int daggerDamage() {
-        int base = (int) Math.round(arrowDamage() * 0.33);
-        return Math.min(MELEE_DAMAGE_CAP, base + reforgedDamageBonus);
+    public int combatPinDamage() {
+        int base = (int) Math.round(arrowDamage() * 0.20);
+        return Math.min(THROWN_DAMAGE_CAP, base + reforgedDamageBonus);
     }
 
     /**
@@ -511,8 +549,10 @@ public class Player extends Entity {
         return alive && (nowMs - lastAttackAt >= effectiveAttackCooldownMs());
     }
 
-    /** Base cooldown reduced by Swing Speed (sword) or Quick Charge (bow) enchants, floored so
-     *  it can never hit 0/negative. Also drives the sword/bow "ready" color used when drawing. */
+    /** Base cooldown reduced by Swing Speed (Tank's Dagger) or Quick Charge (bow) enchants,
+     *  floored so it can never hit 0/negative. Also drives the weapon's "ready" color when
+     *  drawing. Does NOT apply to the Combat Pin -- see COMBAT_PIN_COOLDOWN_MS, which is its
+     *  own fixed, much shorter cooldown, independent of this one. */
     public long effectiveAttackCooldownMs() {
         double reductionPercent = playerClass == PlayerClass.TANK
                 ? enchantValue(EnchantType.SWING_SPEED)
@@ -526,25 +566,36 @@ public class Player extends Entity {
      * pass true only on the frame the attack key was freshly pressed (not
      * held), so holding the button down can't auto-spam once cooldown is up.
      * Only called when the weapon slot (slot 0) is selected.
+     *
+     * For a Ranger with no arrows left, this returns false on purpose -- GamePanel routes that
+     * case to tryCombatPinAttack() instead, which has its own much faster cooldown. Firing the
+     * Dagger (Tank) or an arrow (Ranger, ammo > 0) both still go through this normal gate.
      */
     public boolean tryAttack(boolean attackJustPressed, long nowMs) {
         if (!attackJustPressed || !isCooldownReady(nowMs)) return false;
+        if (playerClass.attackType == AttackType.RANGED && ammo <= 0) return false;
         lastAttackAt = nowMs;
-        if (playerClass.attackType == AttackType.RANGED) {
-            if (ammo > 0) {
-                ammo--;
-                usedDaggerLastAttack = false;
-            } else {
-                usedDaggerLastAttack = true; // out of arrows -> dagger swing instead
-            }
-        }
+        if (playerClass.attackType == AttackType.RANGED) ammo--;
+        return true;
+    }
+
+    /**
+     * The Ranger's Combat Pin: independent of tryAttack's cooldown entirely, so it can fire
+     * far faster (COMBAT_PIN_COOLDOWN_MS) than the bow ever could. Used automatically once
+     * arrows run out, or on demand from the hotbar even with arrows left.
+     */
+    public boolean tryCombatPinAttack(boolean actionJustPressed, long nowMs) {
+        if (!alive || !actionJustPressed) return false;
+        if (nowMs - lastCombatPinAt < COMBAT_PIN_COOLDOWN_MS) return false;
+        lastCombatPinAt = nowMs;
         return true;
     }
 
     /**
      * Same cooldown gate as tryAttack, but without the weapon-specific side
-     * effects (ammo consumption / dagger flag) -- used when a non-weapon
-     * hotbar slot (medic kit, shield, manual dagger) is selected instead.
+     * effect (ammo consumption) -- used when the medic kit or shield
+     * hotbar slot is selected instead. The Combat Pin slot bypasses this
+     * entirely now (see tryCombatPinAttack).
      */
     public boolean tryUtilityAction(boolean actionJustPressed, long nowMs) {
         if (!actionJustPressed || !isCooldownReady(nowMs)) return false;
@@ -552,7 +603,7 @@ public class Player extends Entity {
         return true;
     }
 
-    /** Explicit per-tier, per-class damage table now (Bow: 90/105/130/165/220, Sword:
+    /** Explicit per-tier, per-class damage table now (Bow: 90/105/130/165/220, Dagger:
      *  50/60/75/95/110) -- replaces the old shared multiplier since these don't scale evenly. */
     public int effectiveDamage() {
         return playerClass == PlayerClass.TANK ? weaponTier.swordDamage : weaponTier.bowDamage;
@@ -632,15 +683,49 @@ public class Player extends Entity {
         }
     }
 
-    private static final int SWING_DURATION_MS = 220;
+    private static final int DISAPPEAR_MS = 90; // Dagger/Combat Pin briefly vanish -- it's in flight now, not in hand
     private static final int BOW_RECOIL_MS = 150;
 
-    /** Sword/bow (or dagger fallback) beside the character: green=ready, red=recharging, with a swing/recoil cue. */
+    // Shared tiny pixel-art glyphs -- also used by ui.HUD for the hotbar icons, so this is the
+    // one place to edit them. Row-major, top-to-bottom / left-to-right, weapon-facing-right.
+    public static final boolean[][] DAGGER_GLYPH = {
+            {false, false, true, false},
+            {true, true, true, true},
+            {false, false, true, false}
+    };
+    public static final boolean[][] COMBAT_PIN_GLYPH = {
+            {false, false, false, false},
+            {true, true, true, true},
+            {false, false, false, false}
+    };
+    public static final boolean[][] BOW_GLYPH = {
+            {true, false, true},
+            {true, false, true}
+    };
+
+    public static void drawPixelGlyph(Graphics2D g, boolean[][] glyph, int originX, int originY, int px, Color color) {
+        g.setColor(color);
+        for (int row = 0; row < glyph.length; row++) {
+            for (int col = 0; col < glyph[row].length; col++) {
+                if (glyph[row][col]) g.fillRect(originX + col * px, originY + row * px, px, px);
+            }
+        }
+    }
+
+    /** Weapon rig beside the character: green=ready, red=recharging. The bow still draws back
+     *  and looses; the Dagger and Combat Pin are both thrown/fired now (no melee swings), so
+     *  instead of a swing OR a recoil-kick, the glyph briefly disappears entirely right after
+     *  firing -- it left the hand as the projectile now on screen -- then reappears (infinite
+     *  ammo, so there's always another one to draw). */
     private void drawWeapon(Graphics2D g, int camX, int camY, long nowMs) {
         int cx = (int) centerX() - camX;
         int cy = (int) centerY() - camY;
-        long sinceAttack = nowMs - lastAttackAt;
-        double cooldownRatio = Math.min(1.0, sinceAttack / (double) effectiveAttackCooldownMs());
+        boolean onCombatPin = playerClass.attackType == AttackType.RANGED && ammo <= 0;
+        // Out of arrows -> the ready/recharging color (and disappear timing) should reflect the
+        // Combat Pin's own fast cooldown, not the bow's -- they're fully independent now.
+        long sinceAttack = onCombatPin ? nowMs - lastCombatPinAt : nowMs - lastAttackAt;
+        long cooldownMs = onCombatPin ? COMBAT_PIN_COOLDOWN_MS : effectiveAttackCooldownMs();
+        double cooldownRatio = Math.min(1.0, sinceAttack / (double) cooldownMs);
         Color weaponColor = lerpColor(new Color(200, 40, 40), new Color(60, 210, 90), cooldownRatio);
         int baseX = cx + facingSide * (size / 2 + 4);
 
@@ -658,20 +743,19 @@ public class Player extends Entity {
                 wg.drawArc(-9, -15, 18, 30, startAngle, 180);
                 wg.setColor(new Color(225, 225, 225));
                 wg.drawLine(0, -14, 0, 14);
-            } else {
-                // sword (Tank) or dagger fallback (Ranger, out of arrows)
-                boolean isDagger = playerClass.attackType == AttackType.RANGED;
-                int bladeLen = isDagger ? 14 : 24;
-                boolean swinging = sinceAttack < SWING_DURATION_MS;
-                double swingT = swinging ? sinceAttack / (double) SWING_DURATION_MS : 1.0;
-                double angleDeg = swinging ? Math.sin(swingT * Math.PI) * 55 * facingSide : 0;
-                wg.translate(baseX, cy);
-                wg.rotate(Math.toRadians(angleDeg));
-                wg.setColor(new Color(90, 70, 50)); // hilt
-                wg.fillRect(facingSide > 0 ? -3 : 0, -4, 3, 8);
-                wg.setColor(weaponColor); // blade
-                wg.fillRect(facingSide > 0 ? 0 : -bladeLen, -3, bladeLen, 6);
+            } else if (sinceAttack >= DISAPPEAR_MS) {
+                // Tank's Dagger, or the Ranger's Combat Pin fallback (out of arrows) -- both
+                // thrown, drawn as the same tiny pixel glyphs as the hotbar icon so switching
+                // to the Combat Pin (out of arrows) visibly swaps the held weapon, not just its
+                // ammo count.
+                boolean[][] glyph = onCombatPin ? COMBAT_PIN_GLYPH : DAGGER_GLYPH;
+                int px = 3;
+                int glyphW = glyph[0].length * px, glyphH = glyph.length * px;
+                int originX = facingSide > 0 ? baseX : baseX - glyphW;
+                wg.translate(originX, cy - glyphH / 2);
+                drawPixelGlyph(wg, glyph, 0, 0, px, weaponColor);
             }
+            // else: mid-throw -- draw nothing, it's the projectile on screen now.
         } finally {
             wg.dispose();
         }

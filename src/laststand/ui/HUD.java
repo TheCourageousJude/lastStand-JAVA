@@ -4,6 +4,8 @@ import laststand.core.Constants;
 import laststand.entity.AttackType;
 import laststand.entity.Player;
 import laststand.entity.PlayerClass;
+import laststand.shop.EnchantCategory;
+import laststand.shop.EnchantSpinOption;
 import laststand.shop.UpgradeType;
 import laststand.shop.Wallet;
 import laststand.wave.WaveManager;
@@ -70,8 +72,8 @@ public class HUD {
         g.setFont(new Font("SansSerif", Font.PLAIN, 12));
         g.setColor(Color.WHITE);
         String weaponLine = p.playerClass.attackType == AttackType.RANGED
-                ? "Arrows: " + p.ammo + (p.ammo <= 0 ? " (dagger!)" : "")
-                : "Melee";
+                ? "Arrows: " + p.ammo + (p.ammo <= 0 ? " (Combat Pin!)" : "")
+                : "Dagger";
         g.drawString(weaponLine, panelX, lineY);
         g.drawString("Lv" + p.level + "  EXP " + p.exp + "/" + Player.EXP_CAP, panelX + 130, lineY);
 
@@ -118,6 +120,23 @@ public class HUD {
         }
     }
 
+    /** Darkened/translucent version of a color for use as a box fill BEHIND a glyph that's drawn
+     *  in a different, full-brightness color on top. 50% instead of the original 35% -- that was
+     *  too dark to actually tell the enchant tier color apart from the background. */
+    private static Color darkenForBg(Color c) {
+        return new Color(c.getRed() * 50 / 100, c.getGreen() * 50 / 100, c.getBlue() * 50 / 100);
+    }
+
+    private static final Color NO_ENCHANT_BG = new Color(45, 45, 45); // nothing rolled into this slot yet
+
+    /** The box color behind a gear slot's glyph: Tier 1-5 (see EnchantSpinOption.TIER_COLORS),
+     *  darkened, based on how enchanted that specific slot is (Player.enchantTierFor) -- NOT the
+     *  material tier, which is what the glyph itself is colored by instead (see drawSlotIcon /
+     *  drawArmorIcons). Plain neutral dark gray if nothing's been enchanted into it at all. */
+    private static Color enchantTierBg(int tier) {
+        return tier <= 0 ? NO_ENCHANT_BG : darkenForBg(EnchantSpinOption.TIER_COLORS[tier - 1]);
+    }
+
     private boolean isSlotUsable(Player p, int slot, long nowMs) {
         return switch (slot) {
             case 0 -> true;
@@ -128,15 +147,28 @@ public class HUD {
         };
     }
 
-    /** Simple blocky icons: slot 0 (weapon) is colored per the owned tier, per the design doc. */
+    /** Blocky icons: slot 0 (weapon) and slot 3 (Combat Pin) get a box fill behind the glyph
+     *  colored by that slot's ENCHANT tier (Tier 1-5, darkened -- see enchantTierBg), while the
+     *  glyph itself is drawn in the weapon's MATERIAL color (WeaponTier.displayColor) -- two
+     *  independent things: what you bought vs. what you've enchanted into it. Slot 0 swaps to
+     *  the Combat Pin glyph the moment a Ranger runs out of arrows, since that's a real weapon
+     *  change, not just an ammo count. */
     private void drawSlotIcon(Graphics2D g, Player p, int slot, int sx, int sy, int size, boolean usable, long nowMs) {
         int cx = sx + size / 2, cy = sy + size / 2;
         Color dim = new Color(90, 90, 90);
         switch (slot) {
-            case 0 -> { // weapon -- colored by current tier
-                g.setColor(usable ? p.weaponTier.displayColor : dim);
-                g.fillRect(cx - 8, cy - 1, 16, 3);
-                g.fillRect(cx - 2, cy - 7, 4, 6);
+            case 0 -> { // weapon -- Dagger (Tank), Bow (Ranger w/ arrows), or Combat Pin (Ranger, out of arrows)
+                Color glyphColor = usable ? p.weaponTier.displayColor : dim; // material color
+                EnchantCategory weaponCat = p.playerClass == PlayerClass.TANK ? EnchantCategory.SWORD : EnchantCategory.BOW;
+                g.setColor(enchantTierBg(p.enchantTierFor(weaponCat)));
+                g.fillRoundRect(sx + 3, sy + 3, size - 6, size - 6, 5, 5);
+                if (p.playerClass == PlayerClass.TANK) {
+                    Player.drawPixelGlyph(g, Player.DAGGER_GLYPH, cx - 8, cy - 6, 4, glyphColor);
+                } else if (p.ammo > 0) {
+                    Player.drawPixelGlyph(g, Player.BOW_GLYPH, cx - 8, cy - 5, 5, glyphColor);
+                } else {
+                    Player.drawPixelGlyph(g, Player.COMBAT_PIN_GLYPH, cx - 8, cy - 6, 4, glyphColor);
+                }
             }
             case 1 -> { // medic kit
                 g.setColor(usable ? new Color(60, 200, 90) : dim);
@@ -160,11 +192,12 @@ public class HUD {
                     }
                 }
             }
-            case 3 -> { // Ranger's manual dagger; blank for Tank (no secondary weapon)
+            case 3 -> { // Ranger's Combat Pin -- derives from Bow's enchant tier; blank for Tank
                 if (p.playerClass == PlayerClass.RANGER) {
-                    g.setColor(usable ? new Color(215, 215, 220) : dim);
-                    g.fillRect(cx - 2, sy + 5, 4, size - 12);
-                    g.fillRect(cx - 5, sy + size - 9, 10, 3);
+                    Color glyphColor = usable ? p.weaponTier.displayColor : dim;
+                    g.setColor(enchantTierBg(p.enchantTierFor(EnchantCategory.BOW)));
+                    g.fillRoundRect(sx + 3, sy + 3, size - 6, size - 6, 5, 5);
+                    Player.drawPixelGlyph(g, Player.COMBAT_PIN_GLYPH, cx - 8, cy - 6, 4, glyphColor);
                 }
             }
         }
@@ -229,22 +262,28 @@ public class HUD {
         drawArmorIcons(g, p, rightAlign ? startX - 10 : startX + totalW + 10, iconY, slotSize, rightAlign);
     }
 
-    /** 3 armor-piece icons (Helmet/Chest/Legs) beside the upgrade icons, all tinted by the
-     *  player's current (unified) armor tier -- "visuals of the armor must change" on upgrade. */
+    /** 3 armor-piece icons (Helmet/Chest/Legs) beside the upgrade icons. The box behind each
+     *  glyph is filled with that piece's own ENCHANT tier color (Tier 1-5, darkened -- see
+     *  enchantTierBg), while the glyph itself is drawn in the armor's MATERIAL color
+     *  (ArmorTier.displayColor, same across all 3 since it's unified) -- two independent things:
+     *  what you bought vs. what you've enchanted into that specific piece. */
+    private static final EnchantCategory[] ARMOR_PIECE_CATEGORIES =
+            {EnchantCategory.HELMET, EnchantCategory.CHESTPLATE, EnchantCategory.LEGGINGS};
+
     private void drawArmorIcons(Graphics2D g, Player p, int anchorX, int iconY, int slotSize, boolean rightAlign) {
-        Color tierColor = p.armorTier.displayColor;
+        Color glyphColor = p.armorTier.displayColor;
         int gap = 3;
         int totalW = 3 * (slotSize + gap) - gap;
         int startX = rightAlign ? anchorX - totalW : anchorX;
 
         for (int i = 0; i < 3; i++) {
             int sx = startX + i * (slotSize + gap);
-            g.setColor(new Color(45, 45, 45));
-            g.fillRoundRect(sx, iconY, slotSize, slotSize, 5, 5);
+            g.setColor(enchantTierBg(p.enchantTierFor(ARMOR_PIECE_CATEGORIES[i])));
+            g.fillRoundRect(sx + 1, iconY + 1, slotSize - 2, slotSize - 2, 5, 5);
             g.setColor(Color.GRAY);
             g.drawRoundRect(sx, iconY, slotSize, slotSize, 5, 5);
 
-            g.setColor(tierColor);
+            g.setColor(glyphColor);
             int cx = sx + slotSize / 2;
             switch (i) {
                 case 0 -> g.fillArc(sx + 4, iconY + 5, slotSize - 8, slotSize - 8, 0, 180); // helmet: dome

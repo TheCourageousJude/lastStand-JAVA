@@ -13,7 +13,9 @@ import java.awt.Color;
  * aoeRadius    : >0 only for splash-damage ranged attacks (blaster golem)
  */
 public enum EnemyType {
-    // baseHealth here is the wave-1 value -- WaveManager/Enemy add +10 HP per wave on top of this
+    // baseHealth here is the wave-1 value -- WaveManager/Enemy add +10 HP per wave on top of this,
+    // then multiply the whole total by 1.18 per boss defeated (compounding, see
+    // WaveManager.bossKillHpMultiplier())
     // -100 HP and -50% damage from the last pass -- early waves were taking way too many hits to clear
     ZOMBIE      ("Zombie",         new Color(46, 158, 46),   250, 1.3, 18, AttackType.MELEE,  WeightClass.MEDIUM, 40,  700,  0, 0),
     SKELETON    ("Skeleton",       new Color(160, 160, 160), 200, 1.1, 15, AttackType.RANGED, WeightClass.MEDIUM, 260, 1400, 6, 0),

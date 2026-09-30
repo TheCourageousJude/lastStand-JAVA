@@ -11,17 +11,19 @@ import java.awt.Color;
  * starts at NONE and has to buy up from scratch. Diamond is Tank-exclusive.
  */
 public enum ArmorTier {
-    NONE(0, null, 0, new Color(90, 90, 90)),
-    LEATHER(10, Currency.DARK, 1, new Color(150, 100, 60)),
-    COPPER(20, Currency.DARK, 2, new Color(200, 120, 60)),
-    IRON(30, Currency.DARK, 3, new Color(180, 180, 190)),
-    GOLD(40, Currency.DARK, 5, new Color(230, 190, 60)),
-    DIAMOND(5, Currency.SILVER, 8, new Color(110, 220, 235));
+    NONE(0, null, 0, new Color(90, 90, 90)), // no material yet -- neutral gray
+    // Material colors -- what each armor-piece glyph is drawn in (see WeaponTier's doc for why
+    // this is now separate from the enchant-tier palette used for the box behind the glyph).
+    LEATHER(10, Currency.DARK, 1, new Color(139, 90, 43)),
+    COPPER(20, Currency.DARK, 2, new Color(184, 115, 51)),
+    IRON(30, Currency.DARK, 3, new Color(195, 195, 200)),
+    GOLD(40, Currency.DARK, 5, new Color(218, 165, 32)),
+    DIAMOND(5, Currency.SILVER, 8, new Color(80, 220, 230));
 
     public final int cost;
     public final Currency currency; // null for NONE, which is never purchased
     public final int defensePerPiece;
-    public final Color displayColor; // used by the buff-bar armor icons
+    public final Color displayColor; // the armor-piece glyph's own color -- material, not enchant tier
 
     ArmorTier(int cost, Currency currency, int defensePerPiece, Color displayColor) {
         this.cost = cost;
