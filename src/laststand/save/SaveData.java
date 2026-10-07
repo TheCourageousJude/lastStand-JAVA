@@ -50,7 +50,9 @@ public class SaveData implements Serializable {
         public int exp;
         public WeaponTier weaponTier;
         public ArmorTier armorTier;
-        public int medicKits;
+        public boolean potionOwned;   // Healing Potion (replaced the old medicKits count)
+        public int ultimateCharge;    // 0..cost -- kills banked toward the ultimate
+        public int potionCharges;
         public boolean shieldUnlocked;
         public Map<UpgradeType, Integer> upgradeLevels = new EnumMap<>(UpgradeType.class);
         public Map<EnchantCategory, Map<EnchantType, Integer>> enchants = new EnumMap<>(EnchantCategory.class);

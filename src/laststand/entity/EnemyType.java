@@ -24,7 +24,13 @@ public enum EnemyType {
     ASSASSIN    ("Assassin",       new Color(245, 245, 245), 110, 1.9, 15, AttackType.MELEE,  WeightClass.LIGHT,  36,  500,  0, 0),
     WOLF        ("Wolf",           new Color(181, 160, 220), 105, 1.8, 14, AttackType.MELEE,  WeightClass.LIGHT,  38,  550,  0, 0),
     GOLEM       ("Golem",          new Color(120, 220, 220), 350, 1.1, 23, AttackType.MELEE,  WeightClass.HEAVY,  46,  800,  0, 0),
-    BLASTER_GOLEM("Blaster Golem", new Color(235, 140, 30),  275, 0.8, 18, AttackType.RANGED, WeightClass.HEAVY,  300, 1800, 5, 30);
+    BLASTER_GOLEM("Blaster Golem", new Color(235, 140, 30),  275, 0.8, 18, AttackType.RANGED, WeightClass.HEAVY,  300, 1800, 5, 30),
+
+    // --- Special enemies (wave 26+ scenarios only; never part of a regular wave pool) ---
+    // Both hit Monolith-style: their normal damage PLUS a % of the victim's Max HP that ignores
+    // Defense (Savage: 16% / 25% for bosses, set in Enemy; Ghastly: see percentMaxHpDamage()).
+    SAVAGE      ("Savage",         new Color(190, 20, 20),   160, 2.8, 16, AttackType.MELEE,  WeightClass.FRAIL,  38,  500,  0, 0),
+    GHASTLY     ("Ghastly",        new Color(205, 215, 235), 220, 2.0, 12, AttackType.MELEE,  WeightClass.MEDIUM, 40,  900,  0, 0);
 
     public final String displayName;
     public final Color color;
@@ -37,6 +43,26 @@ public enum EnemyType {
     public final int cooldownMs;
     public final double projectileSpeed; // only used for RANGED
     public final int aoeRadius;          // 0 = no splash
+
+    /** Extra fraction of the victim's Max HP dealt per hit, ON TOP of normal damage (0 = none).
+     *  Savage's own % is handled in Enemy, because Savage is also a mutation other types can carry. */
+    public double percentMaxHpDamage() {
+        return this == GHASTLY ? 0.03 : 0.0;
+    }
+
+    /** Ghastly enemies take zero knockback. */
+    public boolean knockbackProof() {
+        return this == GHASTLY;
+    }
+
+    public boolean isSpecial() {
+        return this == SAVAGE || this == GHASTLY;
+    }
+
+    /** The 8 original types -- what 'fully random' wave pools draw from. */
+    public static java.util.List<EnemyType> regulars() {
+        return java.util.Arrays.stream(values()).filter(t -> !t.isSpecial()).toList();
+    }
 
     EnemyType(String displayName, Color color, int baseHealth, double baseSpeed, int baseDamage,
               AttackType attackType, WeightClass weightClass, int range, int cooldownMs,

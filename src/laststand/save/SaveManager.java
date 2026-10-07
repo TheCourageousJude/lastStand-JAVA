@@ -16,9 +16,43 @@ public final class SaveManager {
 
     public static final File SOLO_SAVE_FILE = new File("laststand_save_solo.dat");
     public static final File COOP_SAVE_FILE = new File("laststand_save_coop.dat");
+    private static final File LEGACY_SAVE_FILE = new File("laststand_save.dat"); // pre-v1.1.1 single shared save
 
     private static File fileFor(boolean coop) {
         return coop ? COOP_SAVE_FILE : SOLO_SAVE_FILE;
+    }
+
+    /**
+     * One-time migration: v1.1.1 split the single shared save into two per-mode files, which
+     * silently orphaned anyone's existing save (the game just stopped looking at the old
+     * filename). If that old file is still sitting there, read it, figure out which mode it
+     * belongs to (from its own p2Enabled field, which the format has always had), and move it
+     * into that mode's new file. Safe to call every time the game starts -- it's a cheap no-op
+     * once the legacy file is gone, and never overwrites a save someone's already made in the
+     * new format. Leaves the legacy file in place (doesn't delete it) if it can't be read, so a
+     * genuinely broken old file doesn't just vanish without a trace.
+     */
+    public static void migrateLegacySaveIfPresent() {
+        if (!LEGACY_SAVE_FILE.isFile()) return;
+        SaveData data;
+        try (ObjectInputStream in = new ObjectInputStream(new FileInputStream(LEGACY_SAVE_FILE))) {
+            data = (SaveData) in.readObject();
+        } catch (IOException | ClassNotFoundException | ClassCastException e) {
+            System.err.println("Found an old save (" + LEGACY_SAVE_FILE + ") but couldn't read it -- leaving it in place:");
+            e.printStackTrace();
+            return;
+        }
+        File target = fileFor(data.p2Enabled);
+        if (!target.isFile()) {
+            try (ObjectOutputStream out = new ObjectOutputStream(new FileOutputStream(target))) {
+                out.writeObject(data);
+            } catch (IOException e) {
+                System.err.println("Found an old save but failed to migrate it to " + target + " -- leaving the old file in place:");
+                e.printStackTrace();
+                return;
+            }
+        }
+        LEGACY_SAVE_FILE.delete(); // migrated (or a same-mode save already existed) -- don't keep re-checking it
     }
 
     public static boolean saveExists(boolean coop) {

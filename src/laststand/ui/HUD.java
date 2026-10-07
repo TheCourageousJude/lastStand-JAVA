@@ -3,6 +3,7 @@ package laststand.ui;
 import laststand.core.Constants;
 import laststand.entity.AttackType;
 import laststand.entity.Player;
+import laststand.fx.UltimateArt;
 import laststand.entity.PlayerClass;
 import laststand.shop.EnchantCategory;
 import laststand.shop.EnchantSpinOption;
@@ -16,26 +17,30 @@ import java.awt.Graphics2D;
 import java.util.List;
 
 public class HUD {
+    /** Size of the surface the HUD is drawn on (logical px). The game sets these every frame, so
+     *  fullscreen's wider/taller canvas gets a properly spread-out HUD instead of a fixed 1000px one. */
+    public int width = Constants.SCREEN_WIDTH;
+    public int height = Constants.SCREEN_HEIGHT;
 
     public void draw(Graphics2D g, List<Player> players, WaveManager waveManager, Wallet wallet1, Wallet wallet2, long nowMs) {
         g.setColor(new Color(25, 25, 25));
-        g.fillRect(0, 0, Constants.SCREEN_WIDTH, Constants.HUD_HEIGHT);
+        g.fillRect(0, 0, width, Constants.HUD_HEIGHT);
 
         for (Player p : players) {
             if (p.playerNumber == 1) drawPlayerPanel(g, p, 10, wallet1, nowMs);
-            else drawPlayerPanel(g, p, Constants.SCREEN_WIDTH - 260, wallet2, nowMs);
+            else drawPlayerPanel(g, p, width - 260, wallet2, nowMs);
         }
 
         g.setFont(new Font("SansSerif", Font.BOLD, 20));
         String waveText = waveManager.bossWave ? ("WAVE " + waveManager.currentWave + " - BOSS!") : ("WAVE " + waveManager.currentWave);
         int tw = g.getFontMetrics().stringWidth(waveText);
         g.setColor(waveManager.bossWave ? new Color(230, 60, 60) : Color.WHITE);
-        g.drawString(waveText, (Constants.SCREEN_WIDTH - tw) / 2, 34);
+        g.drawString(waveText, (width - tw) / 2, 34);
 
         g.setFont(new Font("SansSerif", Font.PLAIN, 12));
         g.setColor(Color.GRAY);
         String hint = "E: shop   P1: 1-4 select item, SPACE use   P2: 0/9/8/7 select item, ENTER use";
-        g.drawString(hint, (Constants.SCREEN_WIDTH - g.getFontMetrics().stringWidth(hint)) / 2, 52);
+        g.drawString(hint, (width - g.getFontMetrics().stringWidth(hint)) / 2, 52);
     }
 
     private void drawPlayerPanel(Graphics2D g, Player p, int panelX, Wallet wallet, long nowMs) {
@@ -117,7 +122,26 @@ public class HUD {
             g.setFont(new Font("SansSerif", Font.PLAIN, 9));
             g.setColor(Color.LIGHT_GRAY);
             g.drawString(keys[i], sx + 2, y + slotSize - 2);
+
+            // Shield: a silver timer bar above the slot that drains while the shield is up
+            if (i == 2 && p.isShieldActive(nowMs)) {
+                double left = p.shieldRemainingMs(nowMs) / (double) Player.SHIELD_DURATION_MS;
+                int barY = y - 7;
+                g.setColor(new Color(30, 30, 34));
+                g.fillRect(sx, barY, slotSize, 4);
+                g.setColor(new Color(205, 215, 230));
+                g.fillRect(sx, barY, (int) Math.round(slotSize * Math.max(0, Math.min(1, left))), 4);
+                g.setColor(Color.GRAY);
+                g.drawRect(sx, barY, slotSize, 4);
+            }
         }
+
+        // Ultimate box: 100% larger than a hotbar slot, right beside the 4th one, centered on the row.
+        // Blurred icon + an upward-filling bar while charging; crisp + "electrified" when ready.
+        int boxSize = slotSize * 2;
+        int bx = panelX + 4 * (slotSize + gap);
+        int by = y + slotSize / 2 - boxSize / 2;
+        UltimateArt.drawUltimateBox(g, p, bx, by, boxSize, nowMs);
     }
 
     /** Darkened/translucent version of a color for use as a box fill BEHIND a glyph that's drawn
@@ -140,7 +164,7 @@ public class HUD {
     private boolean isSlotUsable(Player p, int slot, long nowMs) {
         return switch (slot) {
             case 0 -> true;
-            case 1 -> p.medicKits > 0;
+            case 1 -> p.potionOwned && p.potionCharges > 0 && p.potionCooldownRemainingMs(nowMs) <= 0;
             case 2 -> p.shieldUnlocked && p.shieldCooldownRemainingMs(nowMs) <= 0;
             case 3 -> p.playerClass == PlayerClass.RANGER;
             default -> false;
@@ -170,13 +194,28 @@ public class HUD {
                     Player.drawPixelGlyph(g, Player.COMBAT_PIN_GLYPH, cx - 8, cy - 6, 4, glyphColor);
                 }
             }
-            case 1 -> { // medic kit
-                g.setColor(usable ? new Color(60, 200, 90) : dim);
-                g.fillRect(sx + 5, sy + 5, size - 10, size - 10);
-                g.setColor(Color.WHITE);
-                g.fillRect(cx - 1, sy + 7, 2, size - 14);
-                g.fillRect(sx + 7, cy - 1, size - 14, 2);
-                drawCount(g, sx, sy, size, p.medicKits);
+            case 1 -> { // Healing Potion: a flask with 3 capacity bars (filled bottom-up = charges left)
+                Color glass = usable ? new Color(200, 215, 225) : dim;
+                Color liquid = usable ? new Color(225, 65, 85) : new Color(110, 70, 75);
+                g.setColor(new Color(150, 110, 70));                       // cork
+                g.fillRect(cx - 3, sy + 3, 6, 3);
+                g.setColor(glass);                                          // neck + body outline
+                g.fillRect(cx - 2, sy + 6, 4, 3);
+                g.drawRoundRect(sx + 6, sy + 9, size - 13, size - 13, 5, 5);
+                for (int bar = 0; bar < Player.POTION_MAX_CHARGES; bar++) {
+                    int by = sy + size - 7 - (bar + 1) * 4 + 1;             // bar 0 is the bottom one
+                    boolean filled = p.potionOwned && bar < p.potionCharges;
+                    g.setColor(filled ? liquid : new Color(55, 55, 60));
+                    g.fillRect(sx + 9, by, size - 19, 3);
+                }
+                if (!p.potionOwned) {
+                    g.setColor(Color.WHITE);
+                    g.setFont(new Font("SansSerif", Font.BOLD, 10));
+                    g.drawString("?", sx + size - 9, sy + size - 2);
+                } else {
+                    long remain = p.potionCooldownRemainingMs(nowMs);
+                    if (remain > 0) drawCount(g, sx, sy, size, (int) Math.ceil(remain / 1000.0)); // 5s cooldown
+                }
             }
             case 2 -> { // shield -- shows a countdown while on cooldown, "?" if not yet purchased
                 g.setColor(usable ? new Color(210, 225, 235) : dim);
@@ -212,17 +251,17 @@ public class HUD {
     // ---------------------------------------------------------- buff bar
 
     /**
-     * Bottom-of-screen readout of all 9 upgrade levels per player -- P1 bottom-left,
+     * Bottom-of-screen readout of every active upgrade level per player -- P1 bottom-left,
      * P2 bottom-right, mirroring the inventory hotbar's quantity-badge style.
      */
     public void drawBuffBar(Graphics2D g, List<Player> players) {
-        int barY = Constants.SCREEN_HEIGHT - Constants.BUFF_BAR_HEIGHT;
+        int barY = height - Constants.BUFF_BAR_HEIGHT;
         g.setColor(new Color(20, 20, 20));
-        g.fillRect(0, barY, Constants.SCREEN_WIDTH, Constants.BUFF_BAR_HEIGHT);
+        g.fillRect(0, barY, width, Constants.BUFF_BAR_HEIGHT);
 
         for (Player p : players) {
             if (p.playerNumber == 1) drawPlayerBuffs(g, p, 10, barY, false);
-            else drawPlayerBuffs(g, p, Constants.SCREEN_WIDTH - 10, barY, true);
+            else drawPlayerBuffs(g, p, width - 10, barY, true);
         }
     }
 
@@ -236,7 +275,7 @@ public class HUD {
             g.drawString(label, anchorX, barY + 13);
         }
 
-        UpgradeType[] types = UpgradeType.values();
+        UpgradeType[] types = UpgradeType.active();
         int slotSize = 20, gap = 3;
         int totalW = types.length * (slotSize + gap) - gap;
         int startX = rightAlign ? anchorX - totalW : anchorX;
@@ -305,6 +344,22 @@ public class HUD {
             g.drawString(defText, startX - gap - tw - 6, iconY + slotSize / 2 + 4);
         } else {
             g.drawString(defText, startX + totalW + gap + 6, iconY + slotSize / 2 + 4);
+        }
+
+        // "DMG: N" just below DEF -- there was previously no on-screen way to tell whether
+        // damage-type upgrades/enchants (Reforged, Preserved Power's damage half, Dagger/Arrow
+        // Damage) were actually doing anything for a given player, which made a real difference
+        // between P1 and P2 impossible to confirm by eye. This is each player's current
+        // effective per-hit damage (Dagger for Tank, arrow for Ranger) with everything already
+        // baked in -- tier, Preserved Power, enchants, Reforged -- directly comparable side by side.
+        String dmgText = "DMG: " + (p.playerClass == PlayerClass.TANK ? p.daggerDamage() : p.arrowDamage());
+        g.setFont(new Font("SansSerif", Font.PLAIN, 11));
+        g.setColor(new Color(255, 180, 120));
+        if (rightAlign) {
+            int tw2 = g.getFontMetrics().stringWidth(dmgText);
+            g.drawString(dmgText, startX - gap - tw2 - 6, iconY + slotSize / 2 + 16);
+        } else {
+            g.drawString(dmgText, startX + totalW + gap + 6, iconY + slotSize / 2 + 16);
         }
     }
 }

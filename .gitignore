@@ -1,29 +1,16 @@
-# Compiled class files
-*.class
+# build output
 out/
-out17/
-bin/
+*.class
+sources.txt
+LastStand.jar
 
-# Packaged jars/artifacts (rebuild these from source instead of committing them)
-*.jar
-*.war
+# runtime save files
+laststand_save_*.dat
+laststand_save.dat
 
-# jpackage build artifacts
-appdist/
-jarinput/
-.jpackage-input/
-dist/
-
-*.dat
-
-# IDE files
+# IDE / OS
 .idea/
 *.iml
 .vscode/
-.classpath
-.project
-.settings/
-
-# OS junk
 .DS_Store
 Thumbs.db

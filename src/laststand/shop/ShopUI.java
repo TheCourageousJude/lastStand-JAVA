@@ -16,6 +16,10 @@ import java.util.List;
  * column when playing solo.
  */
 public class ShopUI {
+    /** Surface size (logical px) -- set by the game each frame, like HUD. */
+    public int width = Constants.SCREEN_WIDTH;
+    public int height = Constants.SCREEN_HEIGHT;
+
 
     public void draw(Graphics2D g, Player p1, Wallet w1, List<ShopItem> p1Items, int p1Index,
                       Player p2, Wallet w2, List<ShopItem> p2Items, int p2Index, boolean p2Active) {
@@ -23,11 +27,11 @@ public class ShopUI {
         int colW = 380;
         int panelW = p2Active ? (colW * 2 + 30) : colW + 20;
         int panelH = 640; // taller to fit the perk row's now-2-line entries
-        int px = (Constants.SCREEN_WIDTH - panelW) / 2;
-        int py = (Constants.SCREEN_HEIGHT - panelH) / 2;
+        int px = (width - panelW) / 2;
+        int py = (height - panelH) / 2;
 
         g.setColor(new Color(0, 0, 0, 175));
-        g.fillRect(0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT);
+        g.fillRect(0, 0, width, height);
 
         g.setColor(new Color(35, 30, 45));
         g.fillRoundRect(px, py, panelW, panelH, 16, 16);

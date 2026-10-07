@@ -1,4 +1,4 @@
-# Last Stand — v1.0.4
+# Last Stand — v1.1.5
 
 See [CHANGELOG.md](CHANGELOG.md) for what changed in this release.
 
@@ -8,14 +8,40 @@ external libraries**, so there's nothing to download or configure;
 
 ## Run it
 
+**Easiest -- the prebuilt executable JAR** (needs only a Java 17+ runtime; nothing to install otherwise):
+
 ```
-cd lastStand
-javac -d out $(find src -name "*.java")
+java -jar release/LastStand-v1.1.5.jar
+```
+
+On most systems you can also just double-click the `.jar`. Save files (`laststand_save_solo.dat`,
+`laststand_save_coop.dat`) are written next to where you launch it from.
+
+**Build it yourself** (any JDK 17+; the repo has no dependencies):
+
+```
+./build.sh          # Linux / macOS         -> LastStand.jar
+build.bat           # Windows               -> LastStand.jar
+```
+
+or by hand:
+
+```
+javac --release 17 -d out -sourcepath src src/laststand/Main.java
 java -cp out laststand.Main
 ```
 
-(On Windows PowerShell, replace `$(find src -name "*.java")` with a loop, or
-just open the folder in IntelliJ/VS Code and hit Run on `Main.java`.)
+(Or just open the folder in IntelliJ/VS Code and hit Run on `Main.java`.)
+
+**A native Windows `.exe`?** A JAR is the portable executable. A real `.exe` has to be built *on Windows*
+with the `jpackage` tool that ships with JDK 17+ (it can't cross-build), e.g.:
+
+```
+jpackage --type app-image --name LastStand --input . --main-jar LastStand.jar --main-class laststand.Main
+```
+
+That makes a self-contained `LastStand\LastStand.exe` folder (no Java needed on the player's machine);
+add `--type exe` (needs the WiX toolset) for an installer.
 
 ## Controls
 
@@ -24,11 +50,12 @@ just open the folder in IntelliJ/VS Code and hit Run on `Main.java`.)
 | Move                          | W A S D         | Arrow keys       |
 | Attack / use selected item    | SPACE (tap — holding does **not** auto-repeat) | ENTER (same) |
 | Select hotbar slot 1 (weapon) | 1               | 0                |
-| Select hotbar slot 2 (medic kit) | 2            | 9                |
+| Select hotbar slot 2 (Healing Potion) | 2       | 9                |
 | Select hotbar slot 3 (shield) | 3               | 8                |
 | Select hotbar slot 4 (secondary — Ranger's Combat Pin) | 4 | 7 |
 | Open shop, or enchant if near the Enchanting Center | E | P |
 | Enchant wheel spins (Default / 30 / 90 / 270 / 450 tier, cheapest to priciest) | 1 2 3 4 5 | 7 8 9 0 - |
+| Toggle fullscreen             | F11 or Alt+Enter (works on every screen) |
 | Menu confirm                  | SPACE or ENTER (either works, either player) |
 | Menu navigate                 | W/S or Up/Down (either works, either player) |
 | Open/close the Settings menu (was instant quit-to-menu — now opens How to Play / Back to Main Menu, the latter behind a Yes/No confirm) | ESC | ESC |
@@ -57,16 +84,29 @@ Main menu: W/S to move the highlight, SPACE to confirm. One item toggles
 Player 2 on/off. Character select: A/D (P1) or Left/Right (P2) to switch
 between Tank and Ranger, then lock in.
 
-**Saving.** ESC → **Save Game** writes one save slot (`laststand_save.dat`,
-next to wherever the game runs from); main menu → **Load Save** restores it
-(after a Yes/No confirmation showing what's in it). A save holds both
-players' class, LVL/EXP, weapon/armor tier, upgrades, enchants, medic kits,
-shield unlock, wallets, arena theme, the pause setting, and wave progress --
-but *not* position, current HP, or live enemies: loading always resumes at
-the start of the saved wave at full health. To discourage save-scumming
-(reloading to undo a bad enchant roll or a risky fight), a save is a
-**one-time checkpoint** -- loading deletes it -- and **Save Game is greyed out
-for 5 waves after a load**. Saves from older versions may be unreadable.
+**Saving.** ESC → **Save Game** writes a save file next to wherever the game
+runs from; main menu → **Load Save** restores it (after a Yes/No
+confirmation showing what's in it). Solo and 2-player runs each get their
+own separate save file (`laststand_save_solo.dat` / `laststand_save_coop.dat`)
+-- a solo save can only ever be loaded into a solo session, a 2-player save
+only into a 2-player session; which file every menu action reads/writes is
+picked by the P1/P2 toggle on the main menu at that moment, not anything
+recorded in the save itself (see `SaveManager`'s class doc). A save holds
+both players' class, LVL/EXP, weapon/armor tier, upgrades, enchants, Healing
+Potion (owned + charges), shield unlock, wallets, and wave progress -- but deliberately *not*
+the arena theme or the "pause during shop/enchant" option (those are
+session/display settings, not run progress, so loading never overrides
+whatever you currently have them set to), and *not* position, current HP,
+or live enemies: loading always resumes at the start of the saved wave at
+full health. To discourage save-scumming (reloading to undo a bad enchant
+roll or a risky fight), a save is a **one-time checkpoint** -- loading
+deletes it -- and **Save Game is greyed out
+for 5 waves after a load**. **Dying destroys that mode's save** (game over =
+every player down), even one you made earlier in the same run; a solo death
+never touches a 2-player save or vice versa, and the game-over screen says so
+when it happens. Saves from older versions may be unreadable (retired perks
+in an old save are simply dropped on load; old Medic Kit counts aren't
+carried over).
 
 **In the shop's upgrade row**: 1-4 (P1) / 0,9,8,7 (P2) directly buy that slot's
 offered perk for 1 yellow orb (no separate confirm needed — the shop's already
@@ -88,14 +128,14 @@ purchase (`Player.tryUpgradeArmor()`) upgrades the whole set at once.
 
 The Tank starts the whole set at Leather for free; the Ranger starts with
 none at all and buys up from scratch. Armor Defense adds directly into the
-same Attack-Defense formula as the Armored perk (`Player.armorDefense()`,
+same Attack-Defense formula (`Player.armorDefense()`,
 folded into `takeDamage()`). The buff bar at the bottom of the screen shows 3
-small armor-piece icons next to the 9 upgrade icons, tinted by the player's
+small armor-piece icons next to the upgrade icons, tinted by the player's
 current tier, so a purchase is visible immediately without opening the shop.
 
 ## Upgrade system
 
-9 perks, each leveling independently 0-20, bought with yellow orbs (1 per
+8 perks, each leveling independently 0-20, bought with yellow orbs (1 per
 level) from a row of 3 random options at the bottom of each player's shop
 column. All levels reset to 0 on a new game. Every purchase re-randomizes all
 3 offers (so stacking the same perk needs a lucky reroll each time); manually
@@ -105,20 +145,25 @@ place of the reroll line until then.
 
 | Perk | Effect |
 |---|---|
-| Speedy | +10% move speed / level |
-| Armored | +1 Defense / level, **plus +1 Defense per boss defeated** (only for players who own at least 1 level of Armored; uncapped, stacks forever) |
-| Recovery | Tank: restores a flat 3% of current total Max HP per enemy slain (not scaled by level). Ranger: +1 arrow recovered per enemy slain, per level |
+| Speedy | +6% move speed / level (was +10% -- nerfed 40%; Lv20 is x2.2, not x3.0) |
+| Innate Talent | (renamed from Recovery, reworked) Tank: restores 1% of Max HP per enemy slain, +1% per level (20% at Lv20). Ranger: 3% chance per level that a shot doesn't use an arrow (60% at Lv20) |
 | Critical | +3% chance to double a hit / level -- same mechanic for both classes |
 | Preserved Power | +1 Max HP AND +1 damage per 20 LVL held (milestones at 20,40,...,500), per level -- unified interval/increment for both stats now. Rises/falls live as LVL is gained or spent. Capped at +500 Max HP / +500 damage (level 20, LVL 500) |
 | Dark Sorcery | +1-4 bonus dark orbs per wave cleared, scaling to +20-80 at level 20 |
 | Silver Bank | +1-2 bonus silver orbs per wave cleared, scaling to +20-40 at level 20 |
-| Grow | +2 max HP per wave cleared, per level (uncapped, stacks forever, heals the gain too) |
 | Reforged | +2 flat damage per wave cleared, per level (uncapped, stacks forever, applies to every attack) |
+| Rechargeability | -1 charge needed for your ultimate per level (40 -> 20 at Lv20) |
+
+Armored and Grow were removed in v1.1.5. Rechargeability took one of those two
+slots; the other is intentionally vacant for now. (They remain in `UpgradeType`
+as hidden "retired" constants purely so older save files still deserialize --
+never offered, shown or applied; use `UpgradeType.active()` for anything
+player-facing.)
 
 **Attack - Defense combat formula**: whenever a player takes a hit,
 `finalDamage = max(1, Attack - Defense)`. `Player.totalDefense()` is now the
-single source of truth for Defense (Armored's levels + boss stacks + armor
-gear + the Protection enchant's percentage) — the HUD's `DEF` readout used to
+single source of truth for Defense (armor gear + the Protection enchant's
+percentage) — the HUD's `DEF` readout used to
 only show the armor-gear portion, which made it look like upgrades and
 enchants weren't doing anything; it now shows the real total. Defense is
 checked in `Player.takeDamage()`, the single entry point for anything
@@ -127,11 +172,11 @@ longer needs special handling there — its bonus lives directly inside
 `maxHealth` (see the Enchanting section below), so a hit just comes off
 real HP like normal.
 
-Dark Sorcery/Silver Bank/Grow/Reforged bonuses are all personal (only the
+Dark Sorcery/Silver Bank/Reforged bonuses are all personal (only the
 buyer's own wallet/stats), on top of the flat +10 dark orbs both players
 always get per wave.
 
-Melee Power, Toughen, and Dodge were reworked into Recovery, Grow, and
+(Historical, pre-v1.1.5:) Melee Power, Toughen, and Dodge were reworked into Recovery, Grow, and
 Reforged respectively -- Melee Power's old flat damage bonus is gone (that
 role now belongs to weapon tiers and Preserved Power), Toughen's one-time %
 HP grant became Grow's recurring per-wave HP gain, and Dodge's evasion chance
@@ -143,7 +188,13 @@ Tank's version, for both classes.
 ## What's implemented
 
 - Main menu → character select (Tank/Ranger, duplicates allowed) → play loop → game over
-- Cross-shaped arena (now 50×45 tiles): flat single-color obstacle tiles (no
+- Cross-shaped arena (55×45 tiles of playable area; odd sizes keep the cross exactly
+  symmetric -- the horizontal arms are longer than the vertical ones) on a **floating island**: an irregular rock border (at least 3 blocks
+  thick on every side, up to 6, rounded corners, textured stone with cracks and
+  highlights; sandstone in the Desert theme) wraps the playable area, with a jagged
+  rocky underside hanging below and sky-blue open air with slow blocky clouds
+  beyond it. The border is solid -- nothing can walk or shoot through it. Inside:
+  flat single-color obstacle tiles (no
   bevel/border — that was reworked away for looking too "blocky"), ~5% of
   which get a small grass-tuft (Forest) or cactus (Desert) decoration doodle,
   rolled once at generation so it doesn't flicker as the camera pans. A
@@ -153,8 +204,8 @@ Tank's version, for both classes.
   full bar rolls over into +1 LVL rather than just capping there, up to a
   hard cap of LVL 500 (the bar just sits full past that point). LVL gates
   the upgrade reroll (needs LVL 20) and is spent on enchant wheel spins
-- Bottom-of-screen buff bar (P1 bottom-left, P2 bottom-right) showing all 9
-  upgrade levels at a glance, same quantity-badge style as the inventory hotbar
+- Bottom-of-screen buff bar (P1 bottom-left, P2 bottom-right) showing every
+  active upgrade level at a glance, same quantity-badge style as the inventory hotbar
 - Beginner wave curriculum for waves 1-15 (fixed enemy pools per your spec),
   fully random pool from wave 16 on. Each **portal** is locked to one enemy type
   for the whole wave (fixes the old "one portal spawning 2+ types" bug) — with
@@ -162,11 +213,13 @@ Tank's version, for both classes.
   wave 24's 3 portals each spawning a different type
 - All 8 enemy types with a simple pixel face each, wave-scaled health (+10/wave)
   and damage (flat +2/wave for every type), +10% speed every 5 waves
-- Boss rounds every 5th wave: 5× health, 0.5× speed, 2.5× damage, knockback-immune
+- Boss rounds every 5th wave: 5× health, 2.5× damage, knockback-immune, regular
+  speed for their type (the old 0.5× slow was removed in v1.1.5), and each boss
+  rolls a **boss special** (see "Wave scenarios & boss specials" below)
 - Every boss defeated makes ALL future enemies 11% tankier (compounding, uncapped) -- on top of
   the existing damage-per-boss-kill bonus. This is meant to be offset by the player's own
-  progress through the same boss kills: Armored's per-boss Defense stacks, Grow's per-wave HP,
-  and whatever enchants/upgrades a player has invested in, not by capping the multiplier itself
+  progress through the same boss kills: Reforged's per-wave damage,
+  and whatever armor/enchants/upgrades a player has invested in, not by capping the multiplier itself
 - Weight-based knockback for players and enemies; knockback now routes through
   the same collision system as normal movement so nothing gets shoved into a wall
 - **Tank**: throws an infinite-ammo Dagger (flips with facing), green when ready /
@@ -182,22 +235,86 @@ Tank's version, for both classes.
   of the bow's, no knockback at all, and it can be fired on demand from hotbar
   slot 4 even with arrows left. No more passive ammo regen — arrows are bought from
   the shop
-- Passive healing: Tank +3 HP/sec, Ranger +1 HP/sec
+- Passive healing: Tank +3 HP/sec, Ranger +1 HP/sec (plus Innate Talent / Regen)
 - **Per-player economy**: separate wallets for P1/P2. Dark orbs (+10 to *both*
   players per wave cleared), silver orbs (33% chance, credited to whoever got
   the kill), yellow orbs (boss kills, or traded from 100 dark / 20 silver)
 - **Shop** (press E): two independent columns, one per player. Weapon tier
   upgrades (Wooden → Flint → Iron → Golden → Diamond, up to +100% damage),
-  arrows (10 for 1 dark orb, Ranger only), Medic Kit (+30 HP, 1 silver orb),
+  arrows (10 for 1 dark orb, Ranger only), the Healing Potion (below),
   Shield (unlock for 5 silver orbs, then 20s cooldown between activations --
   nullifies all damage and knockback while active, contact or projectile),
-  and a full-set Armor upgrade (see the Armor section above). Enchanting and
-  the Potion of Experience are still stubbed as "COMING SOON"
+  and a full-set Armor upgrade (see the Armor section above). Enchanting is
+  fully implemented (see its section)
 - Floating damage numbers appear over a hit enemy on every player attack --
   normal hits fade in 0.5s; a Critical proc is bigger, flashes yellow/orange,
   and fades over 1.5s instead, Terraria-style
 - Game over: resets wave to 1 and **both wallets to zero**; a clickable
   "BACK TO MENU" button as well as SPACE/ENTER
+
+## Ultimates (v1.1.5)
+
+The box beside the hotbar's 4th slot is the **ultimate**. It needs **40 charge** -- 1 per enemy you
+slay (so 40 kills), less 1 per Rechargeability level (20 at Lv20). While charging, its icon is blurred and
+a colored bar fills upward inside it; once full the icon turns crisp and crackles with electricity. **Tap the
+weapon key 3 times quickly** (all within 0.8 s, with the weapon slot selected) to fire it. Kills made *by* an
+ultimate never recharge it (they still pay EXP/orbs as normal). Charge is saved with the game.
+
+- **Ranger -- Giant Arrow.** A huge arrow with its own sprite, auto-aimed at the *nearest* enemy no matter which
+  way you face. Moderate speed (7.5, vs 9 for a normal arrow), pierces every enemy it touches (each once, along
+  its whole 84 px body), **no knockback**, flies **through walls** until it leaves the map, and hits for **150%** of
+  your current arrow damage (no crit roll). Doesn't fire (and doesn't spend the charge) if there's nothing to hit.
+- **Tank -- Thorns.** For **10 s** a red shield with 6 dark-green spikes bulges in and out around you. You take
+  **80% less damage** from everything (applied to the *whole* hit, so a Savage hit's %-of-Max-HP bonus is cut too;
+  the regular Shield stays the only full block). Every 0.5 s, as the spikes reach full extension, each enemy
+  touching the aura takes **50% of your current damage (no crit) + 10% of its own Max HP** and is **knocked back**
+  (bosses take the damage but are knockback-immune). While Thorns runs the regular Shield's timers are frozen
+  (both its active time and its cooldown resume afterwards) and it can't be activated on top.
+  While Thorns is up the ultimate box drains as a green bar to show the time left.
+
+Code: `Player` (charge, triple-tap buffer, Thorns state, shield clock), `GiantArrow`, `fx/UltimateArt` (all the
+drawing), and `GamePanel.activateUltimate / updateGiantArrows / updateThorns`.
+
+## Healing Potion (replaced the stackable Medic Kit in v1.1.5)
+
+One rechargeable flask with **3 capacity bars** (shown on hotbar slot 2). It heals **25% of
+Max HP** per use, has a **5-second cooldown** between uses, and is never wasted at full health.
+Buy it once for **3 silver orbs** (starts full, 3/3); it regains **+1 charge each time a wave is
+cleared**, never above 3. While it isn't full, the shop also offers a 3-silver refill.
+
+## Wave scenarios & boss specials (hidden in-game)
+
+Waves 1-5 play out as classic. From wave 6, every non-boss wave quietly rolls a scenario --
+nothing on screen tells the player which (run with `-Dlaststand.debug=true` to log it):
+Swarm (30 fragile fast enemies, 3 portals), Heavy Hitters (8/15 slow hard hitters, 1-2
+portals), Standard (20 classic-stat enemies), Power Rangers (forces 3 portals: 20 skeletons +
+10 blaster golems, 10% on every wave), and from wave 26: Savages (2 portals, 40% there) and
+Ghastlies (1-2 portals, 8%). Savage enemies hit for their normal damage **plus** 16% of the
+victim's Max HP (25% for a Savage boss) -- the % part ignores Defense, the Shield still
+blocks it all -- and Savage shooters (skeleton / blaster golem variants) fire purple bullets
+75% faster. After a Savage/Ghastly-type hit lands, further hits of that kind are ignored for
+0.5 s (`Player.HYBRID_HIT_IMMUNITY_MS`) so a bunched-up pack can't land every strike in the
+same frame; damage per hit is unchanged. Ghastlies are almost invisible, knockback-proof, and hit for raw + 3% Max HP.
+Odds and counts live in `wave/Scenario.java`.
+
+Every boss wave rolls one special, named in yellow above the boss: **Miniature** (tiny, fast,
+speed 60% of the player's +1% per boss defeated, capped at the player's speed), **Armored**
+(takes 80% damage), **Speedy**, **Strong** (2.5x damage on top of the boss multiplier),
+**Sorcerer** (summons rings of 5/7/10 of its own type at 75/50/25% HP), and from wave 25
+**Savage** (speed 60% of the player's +2% per boss defeated; 25% of boss rolls, 50% from
+wave 50). See `wave/BossScenario.java`.
+
+Enemies also navigate now: they only attack with a clear line to the target, and route
+around the corner blocks (and reposition, if ranged) instead of pinning against a wall or
+shooting into stone (`Arena.hasLineOfSight` / `Arena.waypointToward`).
+
+## Display & fullscreen (v1.1.5)
+
+The window is 1000×740. **F11 / Alt+Enter** toggles real fullscreen: the game is laid out at
+that fixed design size and scaled to the monitor, and the HUD and world view stretch to fill
+the extra width on widescreens (menus stay centered). The camera is always dead-centered on
+the player (the midpoint of both in co-op) and never clamped to the map, so near the edge
+you see the island's rock border, the sky and the clouds (`world/Sky.java`).
 
 ## Weapon Remake (v1.0.7)
 
@@ -211,12 +328,12 @@ Melee swings don't exist anymore, for either class. Both weapons are thrown/fire
 | Cooldown | ~400ms (medium) | ~100ms (very fast) -- its own cooldown, fully independent of the bow's ~1000ms (slow, unchanged reference) |
 | Knockback | small (~4, vs. the bow's ~8) | none at all |
 | Projectile size | a little smaller than an arrow | a lot smaller than the Dagger |
-| Damage formula | unchanged from the old sword (tier + Preserved Power + Dagger Damage enchant + Reforged, capped at 80) | unchanged from the old dagger (20% of effective bow damage + Reforged, capped at 80) |
+| Damage formula | tier + Preserved Power + Dagger Damage enchant + Reforged, uncapped (an old 80-damage cap here was a bug -- Diamond's base alone is 110 -- fixed) | 20% of effective bow damage + Reforged, uncapped |
 | Fires | on the normal attack key, slot 1 | automatically once arrows run out, or on demand from slot 4 even with arrows left |
 
 The Combat Pin's cooldown is deliberately its own thing rather than reusing the bow's --
 otherwise running out of arrows would either inherit the bow's slow rate (contradicting "very
-fast") or force the shared cooldown down to 100ms game-wide (breaking medic kit/shield timing
+fast") or force the shared cooldown down to 100ms game-wide (breaking potion/shield timing
 too). Because of that, slot 4 no longer auto-deselects back to the weapon slot after firing —
 at a ~100ms fire rate, having to reselect the slot before every shot would make it unusable.
 
@@ -267,7 +384,7 @@ want to hand me different values.
   classes are 100 max HP.
 - **Ranger's Combat Pin damage** is 20% of the Ranger's current *effective*
   bow damage (`arrowDamage()`, so it includes tier and Preserved Power), plus
-  Reforged, capped at 80. This was the flagged "possible throwable-darts
+  Reforged, uncapped. This was the flagged "possible throwable-darts
   rework" placeholder -- it happened: see the Weapon Remake section below.
 - **Shield duration** — 5 seconds of full damage/knockback immunity per
   activation (`Player.SHIELD_DURATION_MS`), not specified in the doc; the
@@ -342,14 +459,14 @@ displayed names changed.)
 
 **Protection and HP Boost were reworked to be percentage-based** rather
 than flat numbers. Protection now grants +10%/+25%/+50% of your *total*
-Defense (Armored levels + boss stacks + armor gear, combined) rather than a
+Defense (armor gear, combined) rather than a
 flat +2/+5/+10 — summed across every armor piece that has it socketed, then
 applied once to the total. **HP Boost (v1.0.0 fix) now resizes your Max HP
 bar directly instead of a hidden absorb-pool** — it adds +20%/+45%/+90% of
 your *real* (un-boosted) Max HP as bonus Max HP, summed across every armor
 piece that has it socketed. Your current HP is left exactly where it was —
 58/100 rolling a 10% boost becomes 58/110, not 68/110 — so the bar visibly
-grows and natural regen/medic kits just fill the new headroom over time.
+grows and natural regen/the Healing Potion just fill the new headroom over time.
 Re-rolling a bigger or smaller amount (or rolling the enchant away entirely
 by replacing that piece with something else) recomputes the bonus from
 scratch off your real Max HP every time, rather than stacking; if your
@@ -380,10 +497,11 @@ crit chance onto the Critical perk (Dagger throws only), and Arrow Speed
 boosts both arrow velocity and the knockback it deals (the Dagger and
 Combat Pin have their own fixed knockback, untouched by this enchant).
 
-## Not yet built (explicitly marked "coming soon" per your notes)
+## Not yet built
 
-Potion of Experience. Armor, the upgrade-perks shop, and enchanting are now
-all implemented (see the sections above).
+A replacement for the vacant perk slot.
+The Potion of Experience was dropped. Armor, the upgrade-perks shop, and
+enchanting are all implemented (see the sections above).
 
 ## Project layout
 
@@ -394,8 +512,8 @@ src/laststand/
   entity/  Entity, Player, PlayerClass, Enemy, EnemyType, Projectile, WeightClass, AttackType
   shop/    Wallet, WeaponTier, ArmorTier, Currency, ShopItem, ShopUI, UpgradeType,
            EnchantCategory, EnchantSpinOption, EnchantType, EnchantUI
-  world/   Arena, Portal, TileType, ArenaTheme
-  wave/    WaveManager
+  world/   Arena, Portal, TileType, ArenaTheme, Sky
+  wave/    WaveManager, Scenario, BossScenario
   ui/      HUD
   fx/      DamagePopup
 ```

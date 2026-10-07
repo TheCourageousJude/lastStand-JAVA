@@ -53,8 +53,16 @@ public class Player extends Entity {
 
     // Shop-purchased gear
     public WeaponTier weaponTier = WeaponTier.WOODEN;
-    public int medicKits = 0;
-    public static final int MEDIC_KIT_HEAL = 30;
+    // Healing Potion (replaced the stackable Medic Kit): ONE rechargeable item with 3 capacity bars.
+    // Bought once for 3 silver (starts full), +1 charge each cleared wave up to the cap, heals 25% of
+    // Max HP per use, 5s cooldown between uses.
+    public boolean potionOwned = false;
+    public int potionCharges = 0;
+    public static final int POTION_MAX_CHARGES = 3;
+    public static final int POTION_COST_SILVER = 3;
+    public static final double POTION_HEAL_FRACTION = 0.25;
+    public static final long POTION_COOLDOWN_MS = 5000;
+    private long potionLastUsedAt = -999999;
     private long lastHealFlashAt = -999999;
 
     // Armor: ONE tier shared by all 3 pieces (Helmet/Chest/Legs upgrade together in a single
@@ -278,6 +286,9 @@ public class Player extends Entity {
     // P1 selects with 1/2/3/4, P2 with 0/9/8/7; their attack key then "uses" whatever's selected.
     public int selectedSlot = 0;
 
+    /** Speedy perk: +6% move speed per level (was 10% -- a 40% nerf; Lv20 is now x2.2 instead of x3.0). */
+    public static final double SPEEDY_BONUS_PER_LEVEL = 0.06;
+
     // EXP, banked for the upcoming enchantment system. A full 500 bar converts to +1 LVL and
     // rolls over (doesn't just cap and sit there) -- "each bar that is full adds +1 LVL".
     public int exp = 0;
@@ -301,7 +312,7 @@ public class Player extends Entity {
         refreshPreservedPowerBonus(); // level may have just gone up -- Preserved Power's HP scales with it
     }
 
-    // Upgrade shop: 9 perks, each levels independently up to UpgradeType.MAX_LEVEL,
+    // Upgrade shop: the active perks (see UpgradeType.active()), each levels independently up to UpgradeType.MAX_LEVEL,
     // 1 yellow orb per level. 3 random options offered at a time, rerollable for free.
     // All of this resets to empty/0 on a new game since Player is simply recreated.
     public final Map<UpgradeType, Integer> upgradeLevels = new EnumMap<>(UpgradeType.class);
@@ -317,10 +328,10 @@ public class Player extends Entity {
      *  perk is maxed (nothing else left to offer), so this can never come up short of 3. */
     public void rerollPerks() {
         List<UpgradeType> pool = new ArrayList<>();
-        for (UpgradeType type : UpgradeType.values()) {
+        for (UpgradeType type : UpgradeType.active()) {
             if (upgradeLevel(type) < UpgradeType.MAX_LEVEL) pool.add(type);
         }
-        if (pool.size() < 3) pool = new ArrayList<>(List.of(UpgradeType.values())); // everything maxed -- nothing else to offer
+        if (pool.size() < 3) pool = new ArrayList<>(List.of(UpgradeType.active())); // everything maxed -- nothing else to offer
         Collections.shuffle(pool);
         offeredPerks.clear();
         offeredPerks.addAll(pool.subList(0, 3));
@@ -340,7 +351,6 @@ public class Player extends Entity {
     // "Armored... +1 Defense per boss defeated (stackable)" -- only accrues for players who've
     // bought at least 1 level of Armored (see GamePanel.onEnemyKilled()); a player with no
     // upgrade never gains Defense just from a boss dying nearby.
-    public int bossDefenseStacks = 0;
 
     // "Reforged... +2 damage per wave completed, per level (stackable)" -- was +1, buffed to
     // +3, now nerfed again to +2 -- a flat, ever-growing
@@ -381,18 +391,23 @@ public class Player extends Entity {
         recomputeMaxHealth();
     }
 
-    private static final int THROWN_DAMAGE_CAP = 80; // "until it caps at 80" -- applies to both thrown weapons now
+    // There used to be a flat 80-damage cap here ("until it caps at 80"). BUG: Diamond's own base
+    // damage is 110 -- already past 80 with zero bonuses added -- so Golden/Diamond Tanks were
+    // silently capped to WORSE effective damage than a bare Iron dagger the moment they upgraded.
+    // It also flatly contradicted Reforged's "uncapped, stacks forever" design: once at the cap,
+    // Reforged (and every other damage source) did precisely nothing. Removed entirely -- the
+    // Dagger is uncapped now, matching arrowDamage(), which was never capped in the first place.
 
     /** Base weapon damage (tier-scaled) + Preserved Power's dynamic bonus + Dagger Damage enchant +
-     *  Reforged, capped at 80. Tank's thrown Dagger -- the old melee sword swing's replacement,
-     *  same damage formula, same enchant hook (still under EnchantCategory.SWORD internally, so
-     *  old saves/enchant slots keep working -- only the display name changed to "Dagger Damage"). */
+     *  Reforged, uncapped. Tank's thrown Dagger -- the old melee sword swing's replacement, same
+     *  damage formula, same enchant hook (still under EnchantCategory.SWORD internally, so old
+     *  saves/enchant slots keep working -- only the display name changed to "Dagger Damage"). */
     public int daggerDamage() {
         int base = effectiveDamage();
         int bonus = preservedPowerDamageBonus()
                 + (int) Math.round(enchantValue(EnchantType.SWORD_DAMAGE))
                 + reforgedDamageBonus;
-        return Math.min(THROWN_DAMAGE_CAP, base + bonus);
+        return base + bonus;
     }
 
     /** Base weapon damage (tier-scaled) + Preserved Power's dynamic bonus + Arrow Damage enchant +
@@ -410,21 +425,22 @@ public class Player extends Entity {
      * "Punitive stats so the enemies only tickle" -- the Combat Pin (formerly the melee dagger
      * fallback, now a tiny fired sidearm) is 20% of the Ranger's *effective* bow damage (tier +
      * Innate Prowess included), not a flat number, so it scales down proportionally as the bow
-     * gets stronger instead of falling further behind it. Also gets Reforged, capped at 80 same
-     * as the Dagger. Nerfed from 33% to 20% alongside the range buff (0.75 -> 1.75 tiles).
+     * gets stronger instead of falling further behind it. Also gets Reforged, uncapped same as
+     * the Dagger (see daggerDamage()'s doc for why the old 80 cap was a bug and is gone).
+     * Nerfed from 33% to 20% alongside the range buff (0.75 -> 1.75 tiles).
      */
     public int combatPinDamage() {
         int base = (int) Math.round(arrowDamage() * 0.20);
-        return Math.min(THROWN_DAMAGE_CAP, base + reforgedDamageBonus);
+        return base + reforgedDamageBonus;
     }
 
     /**
-     * Total effective Defense: Armored's levels + boss-kill stacks + raw armor gear, all boosted
+     * Total effective Defense: raw armor gear, boosted
      * by the Protection enchant's percentage on top ("+10%/25%/50% of total defense... combined
      * with the current weapon & armor, and the upgrades they have").
      */
     public int totalDefense() {
-        int base = upgradeLevel(UpgradeType.ARMORED) + bossDefenseStacks + armorDefense(); // was 2x/level
+        int base = armorDefense(); // Armored perk (and its boss-kill stacks) were removed -- gear is the only source now
         double protectionPercent = enchantValue(EnchantType.PROTECTION) / 100.0; // summed across all 3 pieces
         return (int) Math.round(base * (1 + protectionPercent));
     }
@@ -436,11 +452,33 @@ public class Player extends Entity {
      */
     public boolean takeDamage(int rawAmount, double fromX, double fromY, double knockbackStrength, long nowMs) {
         if (!alive) return false;
-        if (isShieldActive(nowMs)) {
+        if (isProtected(nowMs)) {
             return false; // Shield: "all damage nullified" and no knockback, contact or projectile
         }
         int finalDamage = Math.max(1, rawAmount - totalDefense()); // Attack - Defense, floor of 1
+        finalDamage = applyThornsResistance(finalDamage, nowMs);
         damage(finalDamage);
+        applyKnockback(fromX, fromY, knockbackStrength);
+        return true;
+    }
+
+    /**
+     * Hybrid hit (Savage / Ghastly), Monolith-style: the enemy's normal damage goes through the usual
+     * Attack - Defense formula, PLUS a % of this player's Max HP that ignores Defense entirely.
+     * One Shield check covers the whole hit (Shield nullifies both parts), and one knockback is applied.
+     */
+    public boolean takeHybridDamage(int rawAmount, double fraction, double fromX, double fromY,
+                                    double knockbackStrength, long nowMs) {
+        if (!alive) return false;
+        if (isProtected(nowMs)) return false;
+        // Brief immunity to further Savage/Ghastly-type hits after one lands. Without it a pack that
+        // has bunched up lands every first strike in the same instant -- 3-4 hits of 45+ each in one
+        // frame reads as a one-hit kill and can't be reacted to. Damage per hit is unchanged.
+        if (nowMs - lastHybridHitAt < HYBRID_HIT_IMMUNITY_MS) return false;
+        lastHybridHitAt = nowMs;
+        int rawPart = Math.max(1, rawAmount - totalDefense());
+        int percentPart = Math.max(1, (int) Math.round(maxHealth * fraction));
+        damage(applyThornsResistance(rawPart + percentPart, nowMs)); // Thorns cuts the whole thing, bonus included
         applyKnockback(fromX, fromY, knockbackStrength);
         return true;
     }
@@ -526,7 +564,7 @@ public class Player extends Entity {
             facingY = dy;
             if (facingX > 0.01) facingSide = 1;
             else if (facingX < -0.01) facingSide = -1;
-            double speed = playerClass.moveSpeed * (1 + 0.10 * upgradeLevel(UpgradeType.SPEEDY));
+            double speed = playerClass.moveSpeed * (1 + SPEEDY_BONUS_PER_LEVEL * upgradeLevel(UpgradeType.SPEEDY));
             arena.moveWithCollision(this, dx * speed, dy * speed);
         }
 
@@ -575,7 +613,7 @@ public class Player extends Entity {
         if (!attackJustPressed || !isCooldownReady(nowMs)) return false;
         if (playerClass.attackType == AttackType.RANGED && ammo <= 0) return false;
         lastAttackAt = nowMs;
-        if (playerClass.attackType == AttackType.RANGED) ammo--;
+        if (playerClass.attackType == AttackType.RANGED && talentRng.nextDouble() >= ammoReservationChance()) ammo--;
         return true;
     }
 
@@ -609,27 +647,235 @@ public class Player extends Entity {
         return playerClass == PlayerClass.TANK ? weaponTier.swordDamage : weaponTier.bowDamage;
     }
 
-    public void useMedicKit(long nowMs) {
-        if (medicKits > 0 && alive && health < maxHealth) {
-            medicKits--;
-            health = Math.min(maxHealth, health + MEDIC_KIT_HEAL);
-            lastHealFlashAt = nowMs; // must share the caller's paused-aware clock, not wall time
-        }
+    // ---------------------------------------------------------------- Healing Potion
+
+    /** Uses one charge to heal 25% of Max HP. Needs the potion, a charge, no cooldown, and missing HP
+     *  (so a charge is never wasted at full health). Returns true if it was actually used. */
+    public boolean usePotion(long nowMs) {
+        if (!potionOwned || !alive || potionCharges <= 0 || health >= maxHealth) return false;
+        if (potionCooldownRemainingMs(nowMs) > 0) return false;
+        potionCharges--;
+        potionLastUsedAt = nowMs;
+        health = Math.min(maxHealth, health + (int) Math.round(maxHealth * POTION_HEAL_FRACTION));
+        lastHealFlashAt = nowMs; // must share the caller's paused-aware clock, not wall time
+        return true;
+    }
+
+    public long potionCooldownRemainingMs(long nowMs) {
+        return Math.max(0, POTION_COOLDOWN_MS - (nowMs - potionLastUsedAt));
+    }
+
+    /** +1 charge per cleared wave, never above the 3-bar capacity. */
+    public void restorePotionChargeAfterWave() {
+        if (potionOwned) potionCharges = Math.min(POTION_MAX_CHARGES, potionCharges + 1);
+    }
+
+    /** First purchase unlocks the potion with all 3 bars full; buying again while it isn't full
+     *  tops it back up. Returns true if the purchase went through. */
+    public boolean tryBuyPotion(Wallet wallet) {
+        if (potionOwned && potionCharges >= POTION_MAX_CHARGES) return false; // nothing to refill
+        if (!wallet.trySpend(Currency.SILVER, POTION_COST_SILVER)) return false;
+        potionOwned = true;
+        potionCharges = POTION_MAX_CHARGES;
+        return true;
+    }
+
+    // ---------------------------------------------------------------- Innate Talent (RECOVERY perk)
+
+    /** After a Savage/Ghastly-type hit lands, further hits of that kind are ignored for this long. */
+    public static final long HYBRID_HIT_IMMUNITY_MS = 500;
+    private long lastHybridHitAt = -999999;
+
+    private final Random talentRng = new Random();
+    public static final double AMMO_RESERVATION_PER_LEVEL = 0.03; // Ranger: 3% per level -> 60% at Lv20
+    public static final double TANK_KILL_HEAL_PER_LEVEL = 0.01;   // Tank: 1% of Max HP per level -> 20% at Lv20
+
+    /** Ranger: chance a shot doesn't use up an arrow. */
+    public double ammoReservationChance() {
+        if (playerClass != PlayerClass.RANGER) return 0;
+        return AMMO_RESERVATION_PER_LEVEL * upgradeLevel(UpgradeType.RECOVERY);
+    }
+
+    /** Tank: HP restored when this player slays an enemy (0 with no levels). */
+    public int innateTalentKillHeal() {
+        int lvl = upgradeLevel(UpgradeType.RECOVERY);
+        if (playerClass != PlayerClass.TANK || lvl <= 0) return 0;
+        return Math.max(1, (int) Math.round(maxHealth * TANK_KILL_HEAL_PER_LEVEL * lvl));
+    }
+
+    // ---------------------------------------------------------------- Rechargeability
+
+    public static final int RECHARGE_POINTS_PER_LEVEL = 1; // charge points knocked off the ultimate's cost per level (was 2)
+
+    /** Total ultimate-cooldown reduction from Rechargeability. Nothing consumes this yet -- the
+     *  ultimate itself is still to come -- but the stat is tracked so it's ready when it lands. */
+    public int ultimateCooldownReduction() {
+        return RECHARGE_POINTS_PER_LEVEL * upgradeLevel(UpgradeType.RECHARGEABILITY);
     }
 
     public void activateShield(long nowMs) {
         if (!shieldUnlocked || !alive) return;
-        if (nowMs - shieldLastUsedAt < SHIELD_COOLDOWN_MS) return; // still on cooldown
-        shieldLastUsedAt = nowMs;
-        shieldActiveUntil = nowMs + SHIELD_DURATION_MS;
+        if (isThornsActive(nowMs)) return; // the regular shield can't be stacked on top of Thorns
+        long sn = shieldNow(nowMs);
+        if (sn - shieldLastUsedAt < SHIELD_COOLDOWN_MS) return; // still on cooldown
+        shieldLastUsedAt = sn;
+        shieldActiveUntil = sn + SHIELD_DURATION_MS;
+    }
+
+    /** Ms of shield left on the current activation (0 if inactive) -- drives the HUD's draining timer bar. */
+    public long shieldRemainingMs(long nowMs) {
+        return Math.max(0, shieldActiveUntil - shieldNow(nowMs));
     }
 
     public boolean isShieldActive(long nowMs) {
-        return nowMs < shieldActiveUntil;
+        return shieldNow(nowMs) < shieldActiveUntil;
     }
 
     public long shieldCooldownRemainingMs(long nowMs) {
-        return Math.max(0, SHIELD_COOLDOWN_MS - (nowMs - shieldLastUsedAt));
+        return Math.max(0, SHIELD_COOLDOWN_MS - (shieldNow(nowMs) - shieldLastUsedAt));
+    }
+
+    /** Anything that FULLY blocks incoming hits right now: just the regular Shield (Thorns only resists). */
+    public boolean isProtected(long nowMs) {
+        return isShieldActive(nowMs);
+    }
+
+    /** Thorns' damage resistance, applied to a finished hit (min 1 so a hit never rounds to nothing). */
+    private int applyThornsResistance(int damage, long nowMs) {
+        if (!isThornsActive(nowMs)) return damage;
+        return Math.max(1, (int) Math.round(damage * (1.0 - THORNS_DAMAGE_RESISTANCE)));
+    }
+
+    /**
+     * The shield's own clock. While Thorns is running it stands still, so both the shield's active
+     * time and its cooldown are frozen for those 10 seconds (and resume exactly where they were).
+     */
+    private long shieldNow(long nowMs) {
+        settleThorns(nowMs);
+        long frozen = shieldFrozenTotalMs + (thornsStartedAt >= 0 ? nowMs - thornsStartedAt : 0);
+        return nowMs - frozen;
+    }
+
+    // ================================================================== ULTIMATE
+    // Charged by kills (1 per enemy slain, never by kills the ultimate itself makes); 40 charge, less
+    // 1 per Rechargeability level. Triggered by tapping the weapon key 3 times quickly.
+    // Ranger: GIANT ARROW. Tank: THORNS.
+
+    public static final int ULTIMATE_BASE_COST = 40; // was 100 -- far too long to wait
+    public static final int ULTIMATE_MIN_COST = 10;
+    public static final long ULTIMATE_TAP_WINDOW_MS = 800; // all 3 taps within this
+    public int ultimateCharge = 0;
+    private final long[] ultimateTaps = {-999999, -999999, -999999};
+
+    /** Charge needed to fire the ultimate: 40, minus 1 per Rechargeability level (20 at level 20). */
+    public int ultimateCost() {
+        return Math.max(ULTIMATE_MIN_COST, ULTIMATE_BASE_COST - ultimateCooldownReduction());
+    }
+
+    public boolean ultimateReady() {
+        return alive && ultimateCharge >= ultimateCost();
+    }
+
+    public double ultimateChargeFraction() {
+        return Math.min(1.0, ultimateCharge / (double) ultimateCost());
+    }
+
+    public void addUltimateCharge(int amount) {
+        ultimateCharge = Math.min(ultimateCost(), ultimateCharge + amount);
+    }
+
+    /**
+     * Call on every fresh press of the weapon key. Remembers the last 3 press times; returns true on the
+     * press that completes a triple-tap (all 3 within ULTIMATE_TAP_WINDOW_MS) while the ultimate is
+     * fully charged. (Just the timestamps of the last 3 key-downs -- nothing fancier is needed.)
+     */
+    public boolean registerUltimateTap(long nowMs) {
+        // Only taps made WHILE it's ready count. Otherwise someone mashing attack when the 100th kill lands
+        // would have the very next tap complete an "old" triple and fire it by accident, with no deliberate
+        // triple-tap at all.
+        if (!ultimateReady()) {
+            java.util.Arrays.fill(ultimateTaps, -999999L);
+            return false;
+        }
+        ultimateTaps[0] = ultimateTaps[1];
+        ultimateTaps[1] = ultimateTaps[2];
+        ultimateTaps[2] = nowMs;
+        if (ultimateTaps[2] - ultimateTaps[0] <= ULTIMATE_TAP_WINDOW_MS) {
+            java.util.Arrays.fill(ultimateTaps, -999999L); // so one burst of taps can't fire it twice
+            return true;
+        }
+        return false;
+    }
+
+    /** Spends the charge. */
+    public void consumeUltimate() {
+        ultimateCharge = 0;
+    }
+
+    // ---- Tank: Thorns ----
+    public static final long THORNS_DURATION_MS = 10_000;
+    public static final long THORNS_PULSE_MS = 500;           // spikes bulge out and back once per pulse; they hit at full extension
+    public static final double THORNS_DAMAGE_FRACTION = 0.50; // of the Tank's current damage (no crit)
+    public static final double THORNS_MAX_HP_BONUS = 0.10;    // plus 10% of the affected enemy's max HP, each pulse
+    /** While Thorns is up the Tank takes 80% less damage from everything -- applied to the WHOLE hit, so a
+     *  Savage hit's %-of-Max-HP bonus is cut too. (Not immunity: the regular Shield is the only full block.) */
+    public static final double THORNS_DAMAGE_RESISTANCE = 0.80;
+    /** Each pulse also shoves the enemies it hits away from the Tank. */
+    public static final double THORNS_KNOCKBACK = 7.0;
+    private long thornsStartedAt = -1, thornsActiveUntil = -1;
+    private long shieldFrozenTotalMs = 0;
+    private long lastThornsPulseIdx = 0;
+
+    private void settleThorns(long nowMs) {
+        if (thornsStartedAt >= 0 && nowMs >= thornsActiveUntil) {
+            shieldFrozenTotalMs += thornsActiveUntil - thornsStartedAt;
+            thornsStartedAt = -1;
+        }
+    }
+
+    public boolean isThornsActive(long nowMs) {
+        settleThorns(nowMs);
+        return thornsStartedAt >= 0;
+    }
+
+    public long thornsElapsedMs(long nowMs) {
+        return thornsStartedAt < 0 ? 0 : nowMs - thornsStartedAt;
+    }
+
+    public long thornsRemainingMs(long nowMs) {
+        return isThornsActive(nowMs) ? Math.max(0, thornsActiveUntil - nowMs) : 0;
+    }
+
+    /** Starts Thorns if this is a Tank with a full charge. Returns true if it went off. */
+    public boolean activateThorns(long nowMs) {
+        if (playerClass != PlayerClass.TANK || !ultimateReady() || isThornsActive(nowMs)) return false;
+        consumeUltimate();
+        thornsStartedAt = nowMs;
+        thornsActiveUntil = nowMs + THORNS_DURATION_MS;
+        lastThornsPulseIdx = 0;
+        return true;
+    }
+
+    /** True once per pulse while Thorns is running (at the moment the spikes are fully out). */
+    public boolean thornsPulseDue(long nowMs) {
+        if (!isThornsActive(nowMs)) return false;
+        long idx = (thornsElapsedMs(nowMs) + THORNS_PULSE_MS / 2) / THORNS_PULSE_MS;
+        if (idx > lastThornsPulseIdx) {
+            lastThornsPulseIdx = idx;
+            return true;
+        }
+        return false;
+    }
+
+    /** Flat part of a Thorns hit: 50% of the Tank's current damage, ignoring crit. */
+    public int thornsBaseDamage() {
+        return (int) Math.round(daggerDamage() * THORNS_DAMAGE_FRACTION);
+    }
+
+    // ---- Ranger: Giant Arrow ----
+    /** The giant arrow's damage: 150% of the Ranger's current arrow damage, ignoring crit. */
+    public int giantArrowDamage() {
+        return (int) Math.round(arrowDamage() * laststand.entity.GiantArrow.DAMAGE_MULT);
     }
 
     /** Returns true if the purchase went through (wasn't already unlocked, had enough silver). */
@@ -668,7 +914,10 @@ public class Player extends Entity {
         drawWeapon(g, camX, camY, nowMs);
 
         int sx = (int) x - camX, sy = (int) y - camY;
-        if (isShieldActive(nowMs)) {
+        if (isThornsActive(nowMs)) {
+            laststand.fx.UltimateArt.drawThorns(g, sx + size / 2, sy + size / 2, thornsElapsedMs(nowMs),
+                    thornsRemainingMs(nowMs), THORNS_PULSE_MS);
+        } else if (isShieldActive(nowMs)) {
             // "huge silver-circular forcefield around the player"
             int cx2 = sx + size / 2, cy2 = sy + size / 2;
             int r = size + 14;

@@ -2,6 +2,128 @@
 
 All notable changes to this project are documented here.
 
+## v1.1.5
+
+A big gameplay + presentation update.
+
+### Added
+- **Wave scenarios (wave 6+, hidden in-game).** Non-boss waves from 6 roll one of: *Swarm*
+  (30 fragile, fast, weaker-hitting enemies; 3 portals), *Heavy Hitters* (slow, hard-hitting;
+  8 with 1 portal, 15 with 2), *Standard* (20 classic enemies), *Power Rangers* (forces 3
+  portals; 20 skeletons + 10 blaster golems, split evenly), and from wave 26 *Savages* (20 red
+  enemies, 2 portals) and *Ghastlies* (near-invisible, 15/20, 1-2 portals). Each has its own
+  spawn pacing (all out in ~3-7.5 s). Odds: Power Rangers 10% on every wave; on waves 26+
+  Savages 40% (2-portal waves) and Ghastlies 8%; the rest split evenly. Nothing on screen names
+  the scenario (`-Dlaststand.debug=true` logs it).
+- **Boss specials**, one rolled per boss wave and named in yellow above the boss: Miniature,
+  Armored, Speedy, Strong, Sorcerer (summons 5/7/10 of its own type at 75/50/25% HP) and, from
+  wave 25, Savage (25% of rolls, 50% from wave 50). Miniature/Savage speed is a fraction of the
+  player's (60%, +1% / +2% per boss defeated).
+- **Savage hits** deal the enemy's raw damage plus a % of the victim's Max HP (16%, bosses 25%)
+  that ignores Defense; Shield blocks it entirely. Savage skeleton/blaster-golem variants fire
+  nightmare-purple bullets 75% faster. Ghastlies hit for raw + 3% Max HP. After a Savage/Ghastly-type
+  hit lands, further hits of that kind are ignored for 0.5 s so a bunched pack can't land every strike
+  in one frame (per-hit damage unchanged; a full pack now takes ~1.8-3.3 s to kill a stationary
+  140-HP player instead of ~0.7-1.1 s).
+- **Healing Potion** -- a 3-bar rechargeable flask replacing Medic Kits (25% Max HP, 5 s
+  cooldown, +1 charge per cleared wave, 3 silver to buy/refill).
+- **Rechargeability** perk (-1 charge needed for your ultimate per level; 40 -> 20 at Lv20).
+- **Innate Talent** (reworked Recovery): Tank heals 1%/level of Max HP per kill (20% at Lv20);
+  Ranger has 3%/level chance a shot doesn't use an arrow (60% at Lv20).
+- **Ultimates.** The box beside the hotbar's 4th slot is now the ultimate: 40 charge (1 per enemy slain,
+  -1 per Rechargeability level), shown as a blurred icon with an upward-filling bar that turns crisp and
+  electrified when full. Tap the weapon key 3 times within 0.8 s to fire it; kills made by an ultimate don't
+  recharge it. **Ranger: Giant Arrow** -- its own big sprite, auto-aimed at the nearest enemy, moderate speed,
+  pierces everything, no knockback, passes through walls, 150% damage. **Tank: Thorns** -- 10 s red shield
+  with 6 pulsing dark-green spikes: 80% damage resistance (whole hit, Savage bonus included), each 0.5 s pulse
+  hits touching enemies for 50% of current damage + 10% of their max HP and knocks them back; freezes the
+  regular Shield's timers and can't be stacked with it. Charge is saved. (HUD strip is 6 px taller.)
+- **HUD:** a silver timer bar above the shield that drains over its 5 s of protection.
+- **Smarter enemy AI.** Enemies attack only with a clear line to the target and route around the
+  corner blocks (ranged ones reposition until they can see the player) -- no more shooting into
+  walls or pinning against a corner. Uses a cached shortest-route map; ~0.1 ms/frame for 80 enemies.
+- **Fullscreen** (F11 / Alt+Enter) with display scaling; the HUD and world view stretch to fill
+  widescreens, menus stay centered, mouse clicks are mapped through the scale.
+- **Floating-island arena.** The camera is dead-centered on the player (never clamped to the map);
+  beyond the edge is a sky-blue backdrop with slow blocky clouds. The playable cross is wrapped in
+  an irregular, textured rock border (3-6 blocks thick, rounded corners; sandstone in Desert) with
+  a jagged rocky underside. The border is solid for movement, shots and pathfinding.
+- **Executable JAR** (`release/LastStand-v1.1.5.jar`, `java -jar`, built for Java 17+) plus `build.sh` / `build.bat`
+  so anyone can rebuild it, and a `.gitignore`.
+- **Dying destroys the save file** for that mode (even one made earlier in the same run); the
+  game-over screen says so.
+
+### Changed
+- Window is now 1000x740 (was 1000x700) -- tall enough for the bigger HUD, short enough to leave
+  the taskbar/desktop reachable. On shorter screens it shrinks to fit.
+- Playable arena is 55x45 tiles (odd sizes make the cross exactly symmetric: N=S, W=E; horizontal
+  arms are longer than vertical); the rock border is added around it, so arm lengths and portal
+  spacing are exactly those tile counts.
+- **Bosses no longer move at half speed** -- regular speed for their type; specials adjust from there.
+- **Speedy** nerfed 40%: +6% move speed per level (Lv20 is x2.2 instead of x3.0).
+- Savage / Ghastly / Power Rangers odds and speeds retuned (Ghastly: base speed 2.0, scales with waves).
+
+### Removed
+- **Armored** and **Grow** perks (Rechargeability took one slot; the other is vacant for now).
+  They remain as hidden retired enum constants so old saves still load; their levels are dropped.
+- Stackable **Medic Kits** and the **Potion of Experience** placeholder.
+
+### Notes
+- Saves from v1.1.3 still load (retired perks dropped; old Medic Kit counts are not carried over).
+- Version bumped to v1.1.5.
+
+## v1.1.3
+
+### Investigated -- reported "P2 doesn't benefit from damage upgrades"
+Traced upgrade purchasing (`tryBuyPerk`), storage (`upgradeLevels`, a per-player `EnumMap`), the
+wave-completion loop that applies Grow/Reforged, the damage formulas (`daggerDamage`/
+`arrowDamage`/`combatPinDamage`), and the firing code (`fireDagger`/`fireArrow`/`fireCombatPin`).
+All of it is correctly per-player -- no static fields, no hardcoded P1 references found in any
+of these paths, so this isn't a "P2 is silently reading P1's stats" bug as far as static review
+can tell.
+
+One concrete, confirmed mechanical fact that could fully explain Preserved Power specifically:
+**it requires LVL >= 20 to contribute anything at all** since last update's rework
+(`level / 20` milestones). Below LVL 20, both its HP and damage bonus are exactly 0 -- if P2's
+LVL is lower than P1's, this alone explains it with no bug involved. Reforged has no such
+threshold, so that doesn't explain Reforged specifically.
+
+### Added
+- **"DMG: N" readout** next to the existing "DEF: N" in the buff bar -- there was previously no
+  on-screen way to tell whether a damage-type upgrade or enchant (Reforged, Preserved Power's
+  damage half, Dagger/Arrow Damage) was doing anything at all, unlike Grow (visible HP growth)
+  or Armored (visible DEF). Shows each player's current effective per-hit damage (Dagger for
+  Tank, arrow for Ranger) with tier/Preserved Power/enchants/Reforged already baked in --
+  directly comparable between P1 and P2 now, instead of a guessing game.
+- Version bumped to v1.1.3.
+
+### Fixed (same version -- found via the DMG readout above)
+- **Tank damage was hard-capped at 80, even for a Diamond Dagger.** Real bug, not balance:
+  Diamond's own base damage is 110 -- already over the cap with zero bonuses added -- so
+  Golden/Diamond Tanks were silently capped to WORSE effective damage than a bare Iron dagger
+  the instant they upgraded. It also flatly broke Reforged's "uncapped, stacks forever" design:
+  once at the cap, Reforged (and everything else) did nothing. The old 80-damage cap is removed
+  entirely from both `daggerDamage()` and `combatPinDamage()`, which are now uncapped, matching
+  `arrowDamage()` (which was never capped in the first place).
+
+## v1.1.2
+
+### Fixed
+- **v1.1.1's save-file split orphaned everyone's existing save.** Switching to two per-mode
+  files (`laststand_save_solo.dat` / `laststand_save_coop.dat`) meant the game simply stopped
+  looking at the old shared `laststand_save.dat` -- your save wasn't deleted, the game just
+  couldn't see it anymore.
+  New `SaveManager.migrateLegacySaveIfPresent()` runs once automatically on startup: if the old
+  file is still there, it reads it, checks its own `p2Enabled` field to figure out which mode it
+  belongs to, and copies it into that mode's new file (without overwriting one that already
+  exists there), then removes the old file. If the old file can't be read at all, it's left in
+  place untouched rather than silently discarded.
+  **If you still have your old `laststand_save.dat` sitting next to the game, this update
+  should recover it automatically the next time you launch** -- no action needed on your end.
+- Rewrote the README's Saving section, which was still describing the pre-v1.0.8 single-save
+  design (one shared save slot including the arena theme and pause setting).
+- Version bumped to v1.1.2.
+
 ## v1.1.1
 
 ### Fixed

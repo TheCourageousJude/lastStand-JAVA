@@ -18,6 +18,7 @@ import laststand.shop.WeaponTier;
 import laststand.ui.HUD;
 import laststand.wave.WaveManager;
 import laststand.world.Arena;
+import laststand.world.Sky;
 import laststand.world.ArenaTheme;
 
 import javax.swing.JPanel;
@@ -78,6 +79,7 @@ public class GamePanel extends JPanel {
     private int howToPlayScroll = 0; // px, clamped against content height at render time
     private int p1ShopIndex = 0, p2ShopIndex = 0;
     private int lastWavesCompletedSeen = 0;
+    private boolean saveDestroyedOnDeath = false; // game-over screen notice: a save existed and was just wiped
     private Rectangle gameOverButtonBounds; // recomputed each render; clicked in mousePressed
 
     // Main menu
@@ -106,21 +108,64 @@ public class GamePanel extends JPanel {
     private WaveManager waveManager;
     private final List<Player> players = new ArrayList<>();
     private final List<Projectile> projectiles = new ArrayList<>();
+    private final List<GiantArrow> giantArrows = new ArrayList<>(); // the Ranger's ultimate
     private final List<DamagePopup> damagePopups = new ArrayList<>();
     private int camX, camY;
-    private final int viewportH = Constants.SCREEN_HEIGHT - Constants.HUD_HEIGHT - Constants.BUFF_BAR_HEIGHT;
+
+    // ---- display scaling ----------------------------------------------------------------------
+    // The game is laid out against a fixed 1000x800 "design" size (Constants.SCREEN_*). Whatever the
+    // window really is -- the normal tab, or fullscreen on any monitor -- we scale that design up (or
+    // down) uniformly to fit, and the logical surface grows past the design size on whichever axis
+    // has spare room. Menus/overlays stay centered at design size; the HUD and the world viewport
+    // stretch to the full logical surface, so fullscreen shows MORE world, not just bigger pixels.
+    private double scale = 1.0;
+    private int logicalW = Constants.SCREEN_WIDTH;
+    private int logicalH = Constants.SCREEN_HEIGHT;
+    private Runnable fullscreenToggle; // set by GameWindow
+
+    public void setFullscreenToggle(Runnable r) { this.fullscreenToggle = r; }
+
+    /** Recomputes scale / logical size from the panel's real size. Cheap; called every tick and paint. */
+    private void updateLogicalSize() {
+        int pw = getWidth(), ph = getHeight();
+        if (pw <= 0 || ph <= 0) { scale = 1.0; logicalW = Constants.SCREEN_WIDTH; logicalH = Constants.SCREEN_HEIGHT; return; }
+        scale = Math.min(pw / (double) Constants.SCREEN_WIDTH, ph / (double) Constants.SCREEN_HEIGHT);
+        logicalW = (int) Math.ceil(pw / scale);
+        logicalH = (int) Math.ceil(ph / scale);
+    }
+
+    /** Offset that centers the fixed design-size layout (menus, overlays) inside the logical surface. */
+    private int designOffsetX() { return Math.max(0, (logicalW - Constants.SCREEN_WIDTH) / 2); }
+    private int designOffsetY() { return Math.max(0, (logicalH - Constants.SCREEN_HEIGHT) / 2); }
+
+    private int viewportH() { return logicalH - Constants.HUD_HEIGHT - Constants.BUFF_BAR_HEIGHT; }
 
     public GamePanel() {
+        // v1.1.1 split the single shared save into two per-mode files -- pick up anyone's
+        // pre-existing save under the old filename before anything else touches disk.
+        SaveManager.migrateLegacySaveIfPresent();
+
         setPreferredSize(new java.awt.Dimension(Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT));
         setBackground(Color.BLACK);
         setFocusable(true);
         addKeyListener(input);
+        // F11 (or Alt+Enter) toggles fullscreen. A key binding rather than the game's own key handler so
+        // it works in every screen -- menus, shop, pause -- and isn't swallowed by those states.
+        javax.swing.Action toggleFs = new javax.swing.AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent ev) { if (fullscreenToggle != null) fullscreenToggle.run(); }
+        };
+        getInputMap(WHEN_IN_FOCUSED_WINDOW).put(javax.swing.KeyStroke.getKeyStroke(KeyEvent.VK_F11, 0), "toggleFullscreen");
+        getInputMap(WHEN_IN_FOCUSED_WINDOW).put(javax.swing.KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, java.awt.event.InputEvent.ALT_DOWN_MASK), "toggleFullscreen");
+        getActionMap().put("toggleFullscreen", toggleFs);
         addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
                 requestFocusInWindow(); // clicking the panel should also restore keyboard focus
+                // panel pixels -> design-layout coordinates (undo the display scale and the centering offset)
+                int mx = (int) Math.round(e.getX() / scale) - designOffsetX();
+                int my = (int) Math.round(e.getY() / scale) - designOffsetY();
                 if (state == GameState.GAME_OVER && gameOverButtonBounds != null
-                        && gameOverButtonBounds.contains(e.getX(), e.getY())) {
+                        && gameOverButtonBounds.contains(mx, my)) {
                     returnToMenuFromGameOver();
                 }
             }
@@ -360,6 +405,7 @@ public class GamePanel extends JPanel {
         waveManager = new WaveManager(arena, virtualNow);
         players.clear();
         projectiles.clear();
+        giantArrows.clear();
 
         double cx = arena.centerX();
         double cy = arena.centerY();
@@ -412,6 +458,7 @@ public class GamePanel extends JPanel {
 
         players.clear();
         projectiles.clear();
+        giantArrows.clear();
         double cx = arena.centerX();
         double cy = arena.centerY();
 
@@ -451,9 +498,14 @@ public class GamePanel extends JPanel {
         p.exp = saved.exp;
         p.weaponTier = saved.weaponTier;
         p.armorTier = saved.armorTier;
-        p.medicKits = saved.medicKits;
+        p.potionOwned = saved.potionOwned;
+        p.potionCharges = saved.potionCharges;
+        p.ultimateCharge = saved.ultimateCharge;
         p.shieldUnlocked = saved.shieldUnlocked;
-        p.upgradeLevels.putAll(saved.upgradeLevels);
+        // Retired perks (Armored / Grow) can still be named in an older save -- drop them, they no longer exist.
+        for (Map.Entry<UpgradeType, Integer> e : saved.upgradeLevels.entrySet()) {
+            if (!e.getKey().retired) p.upgradeLevels.put(e.getKey(), e.getValue());
+        }
         for (Map.Entry<EnchantCategory, Map<EnchantType, Integer>> entry : saved.enchants.entrySet()) {
             p.enchants.put(entry.getKey(), new EnumMap<>(entry.getValue()));
         }
@@ -489,7 +541,9 @@ public class GamePanel extends JPanel {
         ps.exp = p.exp;
         ps.weaponTier = p.weaponTier;
         ps.armorTier = p.armorTier;
-        ps.medicKits = p.medicKits;
+        ps.potionOwned = p.potionOwned;
+        ps.potionCharges = p.potionCharges;
+        ps.ultimateCharge = p.ultimateCharge;
         ps.shieldUnlocked = p.shieldUnlocked;
         ps.upgradeLevels.putAll(p.upgradeLevels);
         for (Map.Entry<EnchantCategory, Map<EnchantType, Integer>> entry : p.enchants.entrySet()) {
@@ -677,8 +731,8 @@ public class GamePanel extends JPanel {
                 lines.add("5 tiers each (Wood -> ... -> Diamond for weapons; similar for armor),");
                 lines.add("bought one tier at a time with Dark/Silver orbs respectively.");
                 lines.add("");
-                lines.add("PERKS (9 total, 1 yellow orb per level, up to level " + UpgradeType.MAX_LEVEL + ")");
-                for (UpgradeType type : UpgradeType.values()) {
+                lines.add("PERKS (" + UpgradeType.active().length + " total, 1 yellow orb per level, up to level " + UpgradeType.MAX_LEVEL + ")");
+                for (UpgradeType type : UpgradeType.active()) {
                     lines.add(type.displayName() + ": " + type.effectFor(PlayerClass.TANK));
                 }
             }
@@ -792,6 +846,13 @@ public class GamePanel extends JPanel {
             p.update(input, arena);
             boolean justPressed = (p.playerNumber == 1) ? input.p1AttackJustPressed() : input.p2AttackJustPressed();
 
+            // ULTIMATE: tapping the weapon key 3 times quickly (all within ~0.8s) while the ultimate is
+            // fully charged. Only the weapon slot counts, so item keys never trigger it by accident. The
+            // third tap fires the ultimate INSTEAD of a normal attack; the first two still attack normally.
+            if (p.selectedSlot == 0 && justPressed && p.registerUltimateTap(now) && activateUltimate(p, now)) {
+                continue;
+            }
+
             if (p.selectedSlot == 0) {
                 // A Ranger with no arrows left auto-switches to the Combat Pin, which has its
                 // own much faster, fully independent cooldown -- see tryCombatPinAttack().
@@ -840,6 +901,8 @@ public class GamePanel extends JPanel {
         }
 
         updateProjectiles(now);
+        updateGiantArrows(now);
+        updateThorns(now);
         damagePopups.removeIf(popup -> popup.isExpired(now));
 
         if (enchantingPlayerNumber != 0) {
@@ -861,6 +924,10 @@ public class GamePanel extends JPanel {
 
         boolean anyoneAlive = players.stream().anyMatch(p -> p.alive);
         if (!anyoneAlive) {
+            // Death destroys this mode's save, no mercy -- even one made earlier in this very run.
+            // (Only THIS mode's file; a solo death never touches a 2-player save or vice versa.)
+            saveDestroyedOnDeath = SaveManager.saveExists(p2Enabled);
+            SaveManager.delete(p2Enabled);
             waveManager.resetToWaveOne(now);
             walletP1.reset(); // "reset all resources back to zero each time the game is over"
             walletP2.reset();
@@ -1006,12 +1073,18 @@ public class GamePanel extends JPanel {
                     () -> { if (w.trySpend(Currency.DARK, 1)) p.ammo += 30; }));
         }
 
-        items.add(new ShopItem("Medic Kit (+" + Player.MEDIC_KIT_HEAL + " HP) x" + p.medicKits, "1 Silver Orb", true,
-                () -> { if (w.trySpend(Currency.SILVER, 1)) p.medicKits++; }));
+        if (!p.potionOwned) {
+            items.add(new ShopItem("Buy Healing Potion (3 charges, heals " + (int) (Player.POTION_HEAL_FRACTION * 100) + "% Max HP)",
+                    Player.POTION_COST_SILVER + " Silver Orbs", true, () -> p.tryBuyPotion(w)));
+        } else if (p.potionCharges < Player.POTION_MAX_CHARGES) {
+            items.add(new ShopItem("Refill Healing Potion (" + p.potionCharges + "/" + Player.POTION_MAX_CHARGES + ", +1 each wave cleared)",
+                    Player.POTION_COST_SILVER + " Silver Orbs", true, () -> p.tryBuyPotion(w)));
+        } else {
+            items.add(new ShopItem("Healing Potion: " + p.potionCharges + "/" + Player.POTION_MAX_CHARGES + " (full, +1 each wave cleared)", "", false, null));
+        }
         items.add(new ShopItem(p.shieldUnlocked ? "Shield (unlocked, 20s cooldown)" : "Unlock Shield",
                 p.shieldUnlocked ? "" : Player.SHIELD_COST_SILVER + " Silver Orbs", !p.shieldUnlocked,
                 () -> p.tryBuyShield(w)));
-        items.add(new ShopItem("Potion of Experience -- COMING SOON", "", false, null));
         items.add(armorShopItem(p, w));
 
         items.add(new ShopItem("Trade 100 Dark -> 1 Yellow", "", true, w::tryTradeDarkForYellow));
@@ -1059,7 +1132,7 @@ public class GamePanel extends JPanel {
             // "winning the 10 coal is won for both players" -- flat base, both wallets get the full +10
             walletP1.addDarkOrbs(Wallet.DARK_ORBS_PER_WAVE);
             if (p2Enabled) walletP2.addDarkOrbs(Wallet.DARK_ORBS_PER_WAVE);
-            // Dark Sorcery / Silver Bank / Grow / Reforged are all personal, per-wave-cleared upgrades
+            // Dark Sorcery / Silver Bank / Reforged are all personal, per-wave-cleared upgrades
             for (Player p : players) {
                 Wallet w = p.playerNumber == 1 ? walletP1 : walletP2;
                 int dsLevel = p.upgradeLevel(UpgradeType.DARK_SORCERY);
@@ -1067,13 +1140,8 @@ public class GamePanel extends JPanel {
                 int sbLevel = p.upgradeLevel(UpgradeType.SILVER_BANK);
                 if (sbLevel > 0) w.addSilverOrbs(sbLevel + rng.nextInt(sbLevel + 1));      // range [lvl, 2*lvl]
 
-                // Grow: "+2 max HP per wave completed, per level (stackable)" -- heals the gain too.
-                // Routed through grantPermanentMaxHealth() so it adds to the "real" base rather
-                // than the HP-Boost-inclusive total (keeps HP Boost's % computed off the right number).
-                int growLevel = p.upgradeLevel(UpgradeType.GROW);
-                if (growLevel > 0) {
-                    p.grantPermanentMaxHealth(2 * growLevel);
-                }
+                // +1 Healing Potion charge per cleared wave (capped at the 3-bar capacity)
+                p.restorePotionChargeAfterWave();
                 // Reforged: "+2 damage per wave completed, per level (stackable)" -- was +1,
                 // buffed to +3, now nerfed again to +2.
                 int reforgedLevel = p.upgradeLevel(UpgradeType.REFORGED);
@@ -1093,7 +1161,7 @@ public class GamePanel extends JPanel {
      *  since it needs its own cooldown and must not reset back to slot 0 each shot. */
     private void useSelectedItem(Player p, long now) {
         switch (p.selectedSlot) {
-            case 1 -> p.useMedicKit(now);
+            case 1 -> p.usePotion(now);
             case 2 -> p.activateShield(now);
         }
     }
@@ -1104,21 +1172,21 @@ public class GamePanel extends JPanel {
      * stay individual, credited only to whoever actually got the kill.
      */
     private void onEnemyKilled(Enemy enemy, Player killer) {
+        onEnemyKilled(enemy, killer, false);
+    }
+
+    /** fromUltimate: the kill was made by a Giant Arrow or by Thorns -- it still pays out normally, but
+     *  does NOT count toward recharging the ultimate. */
+    private void onEnemyKilled(Enemy enemy, Player killer, boolean fromUltimate) {
         if (enemy.boss) {
             walletP1.addYellowOrbs(1);
             if (p2Enabled) walletP2.addYellowOrbs(1);
-            // "Armored... +1 for each boss defeated (stackable)" -- this is an Armored perk, not a
-            // free-for-everyone bonus, so it only stacks for players who've actually bought at
-            // least 1 level of Armored. A player with no upgrade stays at 0 stacks and gets no
-            // Defense from bosses, same as before they ever fight one.
-            for (Player p : players) {
-                if (p.upgradeLevel(UpgradeType.ARMORED) > 0) p.bossDefenseStacks++;
-            }
             // "+4 dmg per boss beaten" instead of the old flat +2/wave -- game-wide, affects every
             // enemy type spawned from now on (see WaveManager.spawnOne()).
             waveManager.bossKillCount++;
         }
         if (killer == null) return;
+        if (!fromUltimate) killer.addUltimateCharge(1); // 1 charge per enemy slain
         Wallet w = killer.playerNumber == 1 ? walletP1 : walletP2;
         if (rng.nextDouble() < Wallet.SILVER_ORB_DROP_CHANCE) w.addSilverOrbs(1);
         // 30 EXP per kill at wave 1, +5 for every wave progressed since -- resets to 30 whenever
@@ -1127,18 +1195,81 @@ public class GamePanel extends JPanel {
         int baseExp = 30 + 5 * (waveManager.currentWave - 1);
         killer.addExp(enemy.boss ? baseExp * 5 : baseExp);
 
-        // Recovery: on-kill sustain -- Ranger recovers arrows per level (unchanged); Tank now
-        // heals a flat 3% of current total Max HP per kill instead of +2 HP/level -- doesn't
-        // scale further with additional Recovery levels beyond the first (assumption: the
-        // request dropped "per level" for this one, unlike every other upgrade, so treating it
-        // as a flat percentage rather than 3%-per-level, which would spiral fast at high levels).
-        int recoveryLevel = killer.upgradeLevel(UpgradeType.RECOVERY);
-        if (recoveryLevel > 0) {
-            if (killer.playerClass == PlayerClass.TANK) {
-                int healAmount = (int) Math.round(killer.maxHealth * 0.03);
-                killer.health = Math.min(killer.maxHealth, killer.health + healAmount);
-            } else {
-                killer.ammo += recoveryLevel;
+        // Innate Talent (the RECOVERY perk). Tank: heals 1% of Max HP per level (up to 20%) on a kill.
+        // Ranger's half is an arrow-saving chance rolled when a shot is fired (see Player.tryAttack).
+        int talentHeal = killer.innateTalentKillHeal();
+        if (talentHeal > 0) {
+            killer.health = Math.min(killer.maxHealth, killer.health + talentHeal);
+        }
+    }
+
+    // ------------------------------------------------------------- ultimates
+
+    /** Fires this player's ultimate. Returns false (and spends nothing) if it can't go off right now. */
+    private boolean activateUltimate(Player p, long now) {
+        if (p.playerClass == PlayerClass.TANK) {
+            return p.activateThorns(now);
+        }
+        // Ranger: GIANT ARROW -- aimed at the nearest living enemy no matter where you're facing
+        Enemy nearest = null;
+        double best = Double.MAX_VALUE;
+        for (Enemy e : waveManager.getEnemies()) {
+            if (!e.alive) continue;
+            double d = Math.hypot(e.centerX() - p.centerX(), e.centerY() - p.centerY());
+            if (d < best) { best = d; nearest = e; }
+        }
+        if (nearest == null) return false; // nothing to shoot at -- don't waste the charge
+        p.consumeUltimate();
+        GiantArrow arrow = new GiantArrow(p.centerX(), p.centerY(),
+                nearest.centerX() - p.centerX(), nearest.centerY() - p.centerY(),
+                p.giantArrowDamage(), p.playerNumber);
+        giantArrows.add(arrow);
+        return true;
+    }
+
+    /** Giant arrows fly through walls and through every enemy (each hit once, no knockback). */
+    private void updateGiantArrows(long nowMs) {
+        for (GiantArrow arrow : giantArrows) {
+            arrow.update();
+            if (arrow.isOutOfWorld(arena.worldWidth, arena.worldHeight)) { arrow.alive = false; continue; }
+            Player owner = playerByNumber(arrow.ownerPlayerNumber);
+            for (Enemy enemy : waveManager.getEnemies()) {
+                if (!enemy.alive || !arrow.tryHit(enemy)) continue;
+                try {
+                    int dealt = enemy.scaleIncoming(arrow.damage); // Armored bosses still take reduced damage
+                    enemy.damage(dealt);
+                    spawnDamagePopup(enemy.centerX(), enemy.centerY(), dealt, false, nowMs);
+                    if (!enemy.alive) onEnemyKilled(enemy, owner, true); // its kills don't recharge it
+                } catch (RuntimeException ex) {
+                    System.err.println("Giant arrow hit resolution threw for " + enemy.type);
+                    ex.printStackTrace();
+                }
+            }
+        }
+        giantArrows.removeIf(a -> !a.alive);
+    }
+
+    /** Thorns: each pulse (spikes fully out) hurts every enemy touching the aura -- 50% of the Tank's
+     *  current damage plus 10% of that enemy's max HP, and shoves it away. Kills don't recharge the ultimate. */
+    private void updateThorns(long nowMs) {
+        for (Player p : players) {
+            if (!p.alive || p.playerClass != PlayerClass.TANK || !p.thornsPulseDue(nowMs)) continue;
+            double reach = laststand.fx.UltimateArt.THORN_BASE_RADIUS + laststand.fx.UltimateArt.THORN_SPIKE_REACH;
+            for (Enemy enemy : waveManager.getEnemies()) {
+                if (!enemy.alive) continue;
+                double d = Math.hypot(enemy.centerX() - p.centerX(), enemy.centerY() - p.centerY());
+                if (d > reach + enemy.size / 2.0) continue;
+                try {
+                    int raw = p.thornsBaseDamage() + (int) Math.round(enemy.maxHealth * Player.THORNS_MAX_HP_BONUS);
+                    int dealt = enemy.scaleIncoming(raw);
+                    enemy.damage(dealt);
+                    if (enemy.alive) enemy.applyKnockback(p.centerX(), p.centerY(), Player.THORNS_KNOCKBACK); // bosses are immune as usual
+                    spawnDamagePopup(enemy.centerX(), enemy.centerY(), dealt, false, nowMs);
+                    if (!enemy.alive) onEnemyKilled(enemy, p, true);
+                } catch (RuntimeException ex) {
+                    System.err.println("Thorns hit resolution threw for " + enemy.type);
+                    ex.printStackTrace();
+                }
             }
         }
     }
@@ -1258,9 +1389,10 @@ public class GamePanel extends JPanel {
                             CritResult result = owner != null
                                     ? applyCritical(owner, proj.damage, isDaggerThrow)
                                     : new CritResult(proj.damage, false);
-                            enemy.damage(result.damage());
+                            int dealt = enemy.scaleIncoming(result.damage()); // Armored bosses take reduced damage
+                            enemy.damage(dealt);
                             if (proj.knockback > 0) enemy.applyKnockback(proj.x, proj.y, proj.knockback);
-                            spawnDamagePopup(enemy.centerX(), enemy.centerY(), result.damage(), result.crit(), nowMs);
+                            spawnDamagePopup(enemy.centerX(), enemy.centerY(), dealt, result.crit(), nowMs);
                             if (!enemy.alive) onEnemyKilled(enemy, owner);
                         } catch (RuntimeException ex) {
                             System.err.println("Projectile-hit resolution threw for " + enemy.type
@@ -1278,7 +1410,11 @@ public class GamePanel extends JPanel {
                     boolean inAoe = proj.aoeRadius > 0
                             && Math.hypot(p.centerX() - proj.x, p.centerY() - proj.y) <= proj.aoeRadius;
                     if (hit || inAoe) {
-                        p.takeDamage(proj.damage, proj.x, proj.y, 10.0, nowMs); // Shield + Defense + Temp HP applied inside
+                        if (proj.percentDamage > 0) {
+                            p.takeHybridDamage(proj.damage, proj.percentDamage, proj.x, proj.y, 10.0, nowMs); // Savage shots
+                        } else {
+                            p.takeDamage(proj.damage, proj.x, proj.y, 10.0, nowMs); // Shield + Defense + Temp HP applied inside
+                        }
                         toRemove.add(proj);
                         break;
                     }
@@ -1298,9 +1434,12 @@ public class GamePanel extends JPanel {
             fx = alive.stream().mapToDouble(Player::centerX).average().orElse(arena.centerX());
             fy = alive.stream().mapToDouble(Player::centerY).average().orElse(arena.centerY());
         }
-        int[] cam = arena.clampCamera(fx, fy, Constants.SCREEN_WIDTH, viewportH);
-        camX = cam[0];
-        camY = cam[1];
+        // Always dead-centered on the player (midpoint of both in co-op) -- NOT clamped to the map any
+        // more. Near an edge you see the sky and the island's rim instead of the player drifting
+        // off-center toward a hard wall of camera limit.
+        updateLogicalSize();
+        camX = (int) Math.round(fx - logicalW / 2.0);
+        camY = (int) Math.round(fy - viewportH() / 2.0);
     }
 
     private void tickGameOver() {
@@ -1324,14 +1463,26 @@ public class GamePanel extends JPanel {
         super.paintComponent(g0);
         Graphics2D g = (Graphics2D) g0;
         g.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        updateLogicalSize();
+        g.scale(scale, scale);
+        g.setColor(Color.BLACK);
+        g.fillRect(0, 0, logicalW + 1, logicalH + 1);
 
         try {
-            switch (state) {
-                case MAIN_MENU -> renderMainMenu(g);
-                case OPTIONS -> renderOptions(g);
-                case CHARACTER_SELECT -> renderCharacterSelect(g);
-                case PLAYING -> renderPlaying(g);
-                case GAME_OVER -> renderGameOver(g);
+            if (state == GameState.PLAYING) {
+                renderPlaying(g); // HUD + world use the full logical surface; its overlays center themselves
+            } else {
+                // menus are laid out against the fixed design size -- draw them centered on the surface
+                Graphics2D mg = (Graphics2D) g.create();
+                mg.translate(designOffsetX(), designOffsetY());
+                switch (state) {
+                    case MAIN_MENU -> renderMainMenu(mg);
+                    case OPTIONS -> renderOptions(mg);
+                    case CHARACTER_SELECT -> renderCharacterSelect(mg);
+                    case GAME_OVER -> renderGameOver(mg);
+                    default -> { }
+                }
+                mg.dispose();
             }
         } catch (RuntimeException ex) {
             // Same safety net as tick() -- a bad render frame gets logged and skipped (last
@@ -1358,7 +1509,7 @@ public class GamePanel extends JPanel {
         }
         g.setFont(new Font("SansSerif", Font.PLAIN, 14));
         g.setColor(Color.GRAY);
-        g.drawString("W/S select, SPACE confirm", 380, 480);
+        g.drawString("W/S select, SPACE confirm   |   F11: fullscreen", 380, 480);
 
         g.setFont(new Font("SansSerif", Font.PLAIN, 12));
         g.setColor(new Color(90, 90, 90));
@@ -1484,20 +1635,23 @@ public class GamePanel extends JPanel {
     }
 
     private void renderPlaying(Graphics2D g) {
-        g.setColor(Color.BLACK);
-        g.fillRect(0, 0, getWidth(), getHeight());
-
         long now = virtualNow; // shared with tick() -- keeps shield/heal-flash visuals in sync with
                                 // the actual paused-aware game logic, not raw wall-clock time
-        Graphics2D world = (Graphics2D) g.create(0, Constants.HUD_HEIGHT, Constants.SCREEN_WIDTH, viewportH);
-        arena.draw(world, camX, camY, Constants.SCREEN_WIDTH, viewportH);
+        int viewH = viewportH();
+        Graphics2D world = (Graphics2D) g.create(0, Constants.HUD_HEIGHT, logicalW, viewH);
+        Sky.drawSky(world, camX, camY, logicalW, viewH, System.currentTimeMillis()); // sky + drifting blocky clouds
+        Sky.drawIsland(world, camX, camY, arena);
+        arena.draw(world, camX, camY, logicalW, viewH);
         drawEnchantCenterLabel(world);
         for (Enemy enemy : waveManager.getEnemies()) enemy.draw(world, camX, camY);
         for (Player p : players) if (p.alive) p.draw(world, camX, camY, now);
         for (Projectile proj : projectiles) proj.draw(world, camX, camY);
+        for (GiantArrow arrow : giantArrows) arrow.draw(world, camX, camY);
         for (DamagePopup popup : damagePopups) popup.draw(world, camX, camY, now);
         world.dispose();
 
+        hud.width = logicalW;
+        hud.height = logicalH;
         hud.draw(g, players, waveManager, walletP1, walletP2, now);
         hud.drawBuffBar(g, players);
 
@@ -1506,13 +1660,15 @@ public class GamePanel extends JPanel {
             Player p2 = playerByNumber(2);
             List<ShopItem> p1Items = p1 != null ? buildShopItems(p1, walletP1) : List.of();
             List<ShopItem> p2Items = (p2Enabled && p2 != null) ? buildShopItems(p2, walletP2) : List.of();
+            shopUI.width = logicalW;
+            shopUI.height = logicalH;
             shopUI.draw(g, p1, walletP1, p1Items, p1ShopIndex, p2, walletP2, p2Items, p2ShopIndex,
                     p2Enabled && p2 != null);
         }
 
         if (enchantingPlayerNumber != 0) {
             Player active = playerByNumber(enchantingPlayerNumber);
-            if (active != null) enchantUI.draw(g, active, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT, now);
+            if (active != null) enchantUI.draw(g, active, logicalW, logicalH, now);
         }
 
         // "Press ESC to check Settings" hint, top-right -- only shown when nothing else is
@@ -1521,19 +1677,22 @@ public class GamePanel extends JPanel {
             g.setFont(new Font("SansSerif", Font.PLAIN, 13));
             g.setColor(new Color(255, 255, 255, 160));
             String hint = "Press ESC to check Settings";
-            g.drawString(hint, Constants.SCREEN_WIDTH - g.getFontMetrics().stringWidth(hint) - 12, 18);
+            g.drawString(hint, logicalW - g.getFontMetrics().stringWidth(hint) - 12, 18);
         }
 
         if (pauseMenuOpen) {
-            drawPauseMenuOverlay(g);
+            // dim the WHOLE surface, then lay the menu out at design size, centered
+            g.setColor(new Color(0, 0, 0, 190));
+            g.fillRect(0, 0, logicalW + 1, logicalH + 1);
+            Graphics2D og = (Graphics2D) g.create();
+            og.translate(designOffsetX(), designOffsetY());
+            drawPauseMenuOverlay(og);
+            og.dispose();
         }
     }
 
     /** Dark modal overlay for the ESC pause menu and its two sub-views. */
     private void drawPauseMenuOverlay(Graphics2D g) {
-        g.setColor(new Color(0, 0, 0, 190));
-        g.fillRect(0, 0, Constants.SCREEN_WIDTH, Constants.SCREEN_HEIGHT);
-
         if (confirmingQuit) {
             drawConfirmQuit(g);
         } else if (howToPlayOpen) {
@@ -1725,10 +1884,16 @@ public class GamePanel extends JPanel {
         g.setColor(Color.WHITE);
         g.setFont(new Font("SansSerif", Font.PLAIN, 18));
         g.drawString("Wave reset to 1. All orbs reset to 0.", 340, 300);
+        if (saveDestroyedOnDeath) {
+            g.setColor(new Color(235, 90, 90));
+            String lost = "Your saved game was destroyed.";
+            g.drawString(lost, (Constants.SCREEN_WIDTH - g.getFontMetrics().stringWidth(lost)) / 2, 322);
+            g.setColor(Color.WHITE);
+        }
 
         int btnW = 220, btnH = 46;
         int btnX = (Constants.SCREEN_WIDTH - btnW) / 2;
-        int btnY = 340;
+        int btnY = saveDestroyedOnDeath ? 350 : 340;
         gameOverButtonBounds = new Rectangle(btnX, btnY, btnW, btnH);
 
         g.setColor(new Color(60, 60, 60));

@@ -24,6 +24,11 @@ public class Projectile {
     // the original ruby red.
     public static final Color PLAYER_BULLET_COLOR = new Color(25, 55, 150); // dark blue
     public static final Color ENEMY_BULLET_COLOR = new Color(200, 30, 40); // ruby red, per spec
+    public static final Color SAVAGE_BULLET_COLOR = new Color(110, 0, 165); // nightmare purple (Savage enemies' shots)
+    /** Optional override for an enemy shot's color (null = default ruby red). */
+    public Color color = null;
+    /** >0 = on hit, ALSO deals this fraction of the victim's Max HP on top of 'damage' (Savage shots). */
+    public double percentDamage = 0;
 
     public Projectile(double x, double y, double vx, double vy, int damage, int aoeRadius, boolean fromPlayer) {
         this.x = x;
@@ -51,7 +56,7 @@ public class Projectile {
     }
 
     public void draw(Graphics2D g, int camX, int camY) {
-        g.setColor(fromPlayer ? PLAYER_BULLET_COLOR : ENEMY_BULLET_COLOR);
+        g.setColor(fromPlayer ? PLAYER_BULLET_COLOR : (color != null ? color : ENEMY_BULLET_COLOR));
         g.fillOval((int) (x - radius) - camX, (int) (y - radius) - camY, radius * 2, radius * 2);
     }
 }

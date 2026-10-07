@@ -19,6 +19,8 @@ import java.util.Random;
  *   wave = 4+5n          -> 3 portals open
  *   wave = 5+5n          -> boss round (any monster type, buffed)
  *
+ * Wave 6+ (non-boss) rolls a hidden Scenario; boss waves roll a hidden BossScenario.
+ *
  * Enemy count per wave isn't specified exactly in the doc beyond "N enemies
  * present" -- using a simple linear ramp here, easy to swap out.
  *
@@ -46,8 +48,24 @@ public class WaveManager {
     private int enemiesToSpawn;
     private int enemiesSpawned;
     private long lastSpawnAt;
-    private static final int SPAWN_INTERVAL_MS = 900;
+    private static final int SPAWN_INTERVAL_MS = 900; // NORMAL scenario pacing; others derive theirs (see Scenario)
+    private int spawnIntervalMs = SPAWN_INTERVAL_MS;
     private List<EnemyType> currentPool; // types allowed to spawn this wave
+    /** Scenario in effect for the current wave (NORMAL for waves 1-5 and all boss waves). */
+    public Scenario currentScenario = Scenario.NORMAL;
+    /** Which portal each upcoming spawn comes out of, pre-rolled at wave start (so quotas are exact). */
+    private final java.util.ArrayDeque<Portal> spawnQueue = new java.util.ArrayDeque<>();
+    private static final int FIRST_SCENARIO_WAVE = 6;
+    /** Types a Savage wave / Savage boss can be: the melee Savage, or a Savage-mutated ranged type
+     *  (so purple 75%-faster bullets exist for both skeleton and blaster golem). */
+    private static final List<EnemyType> SAVAGE_POOL =
+            List.of(EnemyType.SAVAGE, EnemyType.SKELETON, EnemyType.BLASTER_GOLEM);
+    /** Boss special in effect (null on non-boss waves). Never shown to the player. */
+    public BossScenario currentBossScenario = null;
+    private Enemy sorcererBoss;
+    private int sorcererStage;
+    // Scenarios are meant to stay hidden from players; run with -Dlaststand.debug=true to log them.
+    private static final boolean DEBUG = Boolean.getBoolean("laststand.debug");
 
     public WaveManager(Arena arena, long nowMs) {
         this.arena = arena;
@@ -65,8 +83,60 @@ public class WaveManager {
         enemiesSpawned = 0;
         lastSpawnAt = nowMs; // must share the caller's clock -- see GamePanel's paused virtual clock
         currentPool = poolFor(waveNumber);
-        configurePortals(); // needs currentPool to assign one type per open portal
-        enemiesToSpawn = bossWave ? 1 : 3 + waveNumber; // tune freely
+        sorcererBoss = null;
+        sorcererStage = 0;
+        configurePortals(); // rolls the scenario, opens portals, assigns one type per open portal
+        enemiesToSpawn = bossWave ? 1 : currentScenario.enemyCount(waveNumber, activePortals.size());
+        spawnIntervalMs = bossWave ? SPAWN_INTERVAL_MS : currentScenario.spawnIntervalMs(SPAWN_INTERVAL_MS);
+        buildSpawnQueue();
+        if (DEBUG) System.out.println("[Wave " + waveNumber + "] "
+                + (bossWave ? "BOSS/" + currentBossScenario.label : currentScenario.label)
+                + " -- " + enemiesToSpawn + " enemies, " + activePortals.size() + " portal(s), 1 per "
+                + spawnIntervalMs + " ms");
+    }
+
+    /**
+     * Scenario roll for wave 6+ (non-boss). Scenarios with a fixed chance (Power Rangers 10%, Savages
+     * 40%, Ghastlies 8% -- see Scenario.fixedChance()) are rolled first when eligible; whatever is
+     * left is split evenly among the eligible Swarm / Heavy Hitters / Standard.
+     */
+    private Scenario rollScenario(int wave, int naturalPortals) {
+        List<Scenario> base = new ArrayList<>();
+        double r = rng.nextDouble();
+        for (Scenario sc : Scenario.values()) {
+            if (sc == Scenario.NORMAL || !sc.eligible(wave, naturalPortals)) continue;
+            double chance = sc.fixedChance();
+            if (chance <= 0) { base.add(sc); continue; }
+            if (r < chance) return sc;
+            r -= chance;
+        }
+        if (base.isEmpty()) return Scenario.STANDARD; // can't happen (Standard is always eligible), but stay safe
+        return base.get(rng.nextInt(base.size()));
+    }
+
+    /** Savage is 25% once eligible (wave 25+), 50% from wave 50; the remaining specials split the rest evenly. */
+    private BossScenario rollBossScenario(int wave) {
+        List<BossScenario> others = new ArrayList<>();
+        for (BossScenario bs : BossScenario.values()) if (bs != BossScenario.SAVAGE) others.add(bs);
+        if (BossScenario.SAVAGE.eligible(wave) && rng.nextDouble() < BossScenario.savageChance(wave)) {
+            return BossScenario.SAVAGE;
+        }
+        return others.get(rng.nextInt(others.size()));
+    }
+
+    private void buildSpawnQueue() {
+        spawnQueue.clear();
+        if (activePortals.isEmpty()) return;
+        List<Portal> picks = new ArrayList<>();
+        if (currentScenario == Scenario.POWER_RANGERS) {
+            // exactly even split across the 3 portals (30 / 3 = 10 each), interleaved at random
+            int perPortal = enemiesToSpawn / activePortals.size();
+            for (Portal p : activePortals) for (int i = 0; i < perPortal; i++) picks.add(p);
+            Collections.shuffle(picks, rng);
+        } else {
+            for (int i = 0; i < enemiesToSpawn; i++) picks.add(activePortals.get(rng.nextInt(activePortals.size())));
+        }
+        spawnQueue.addAll(picks);
     }
 
     /** Beginner curriculum: fixed pool of allowed enemy types per wave, waves 1-15. */
@@ -87,7 +157,7 @@ public class WaveManager {
             case 13 -> List.of(EnemyType.BLASTER_GOLEM);
             case 14 -> List.of(EnemyType.GOLEM, EnemyType.BLASTER_GOLEM, EnemyType.ASSASSIN);
             case 15 -> List.of(EnemyType.GOLEM, EnemyType.ASSASSIN, EnemyType.BLASTER_GOLEM); // boss wave
-            default -> List.of(EnemyType.values()); // wave 16+: fully random
+            default -> EnemyType.regulars(); // wave 16+: fully random (specials only come via scenarios)
         };
     }
 
@@ -132,12 +202,25 @@ public class WaveManager {
 
         int posInCycle = ((currentWave - 1) % 5) + 1; // 1..5
         bossWave = posInCycle == 5;
-        int portalsToOpen = switch (posInCycle) {
+        int naturalPortals = switch (posInCycle) {
             case 1, 3 -> 1;
             case 2 -> 2;
             case 4 -> 3;
             default -> 1; // boss round: one portal is enough
         };
+
+        // Waves 1-5 and every boss wave stay on the classic rules; wave 6+ rolls a scenario.
+        currentScenario = (bossWave || currentWave < FIRST_SCENARIO_WAVE)
+                ? Scenario.NORMAL
+                : rollScenario(currentWave, naturalPortals);
+        currentBossScenario = bossWave ? rollBossScenario(currentWave) : null;
+        if (currentBossScenario == BossScenario.SAVAGE) currentPool = SAVAGE_POOL;
+        int portalsToOpen = currentScenario.portalsToOpen(naturalPortals);
+        switch (currentScenario) {
+            case SAVAGES -> currentPool = SAVAGE_POOL;
+            case GHASTLIES -> currentPool = List.of(EnemyType.GHASTLY);
+            default -> { }
+        }
 
         List<Portal> shuffledPortals = new ArrayList<>(arena.portals);
         Collections.shuffle(shuffledPortals, rng);
@@ -152,14 +235,22 @@ public class WaveManager {
             // wrap around if there are fewer types in the pool than portals open
             portalTypeAssignment.put(portal, shuffledTypes.get(i % shuffledTypes.size()));
         }
+
+        if (currentScenario == Scenario.POWER_RANGERS) {
+            // 20 skeletons + 10 blaster golems over 3 portals: two skeleton portals, one blaster portal
+            for (int i = 0; i < activePortals.size(); i++) {
+                portalTypeAssignment.put(activePortals.get(i), i < 2 ? EnemyType.SKELETON : EnemyType.BLASTER_GOLEM);
+            }
+        }
     }
 
     public void update(long nowMs) {
         for (Portal p : arena.portals) p.update();
 
         enemies.removeIf(e -> !e.alive);
+        updateSorcerer();
 
-        if (enemiesSpawned < enemiesToSpawn && nowMs - lastSpawnAt >= SPAWN_INTERVAL_MS && !activePortals.isEmpty()) {
+        if (enemiesSpawned < enemiesToSpawn && nowMs - lastSpawnAt >= spawnIntervalMs && !activePortals.isEmpty()) {
             lastSpawnAt = nowMs;
             spawnOne();
         }
@@ -169,13 +260,53 @@ public class WaveManager {
         }
     }
 
+    /** Mods for whatever is spawning right now: boss special for bosses, scenario stats otherwise. */
+    private Enemy.Mods currentMods() {
+        if (bossWave) return currentBossScenario.mods(bossKillCount);
+        Enemy.Mods m = Enemy.Mods.of(currentScenario.hpMult, currentScenario.speedMult, currentScenario.damageMult);
+        return currentScenario == Scenario.SAVAGES ? m.withSavage() : m;
+    }
+
     private void spawnOne() {
-        Portal portal = activePortals.get(rng.nextInt(activePortals.size()));
+        Portal portal = spawnQueue.isEmpty()
+                ? activePortals.get(rng.nextInt(activePortals.size()))
+                : spawnQueue.poll();
         EnemyType type = portalTypeAssignment.get(portal); // consistent per portal for the whole wave
-        int size = bossWave ? 46 : 30;
-        double[] pos = arena.randomSpawnNear(portal, size);
-        enemies.add(new Enemy(type, bossWave, pos[0], pos[1], currentWave,
-                bossDamageBonus(), bossKillHpMultiplier()));
+        Enemy.Mods mods = currentMods();
+        double[] pos = arena.randomSpawnNear(portal, Enemy.sizeFor(bossWave, mods));
+        Enemy e = new Enemy(type, bossWave, pos[0], pos[1], currentWave,
+                bossDamageBonus(), bossKillHpMultiplier(), mods);
+        enemies.add(e);
+        if (bossWave) e.specialLabel = currentBossScenario.label; // shown above the boss (regular scenarios stay hidden)
+        if (bossWave && currentBossScenario == BossScenario.SORCERER) sorcererBoss = e;
         enemiesSpawned++;
+    }
+
+    /**
+     * Sorcerer boss: each time its HP first falls to 75% / 50% / 25% it summons a ring of its own
+     * type (5 / 7 / 10). If one hit crosses several thresholds at once, every crossed stage fires.
+     * Minions are ordinary (non-boss) enemies, so the wave isn't clear until they're dead too.
+     */
+    private void updateSorcerer() {
+        Enemy boss = sorcererBoss;
+        if (boss == null || !boss.alive) return;
+        double hpFrac = boss.health / (double) boss.maxHealth;
+        while (sorcererStage < BossScenario.SORCERER_THRESHOLDS.length
+                && hpFrac <= BossScenario.SORCERER_THRESHOLDS[sorcererStage]) {
+            summonRing(boss, BossScenario.SORCERER_SUMMONS[sorcererStage]);
+            sorcererStage++;
+        }
+    }
+
+    private void summonRing(Enemy boss, int count) {
+        double startAngle = rng.nextDouble() * Math.PI * 2;
+        int size = Enemy.sizeFor(false, BossScenario.SORCERER_MINION);
+        for (int i = 0; i < count; i++) {
+            double angle = startAngle + (Math.PI * 2 * i) / count;
+            double[] pos = arena.openSpotAround(boss.centerX(), boss.centerY(),
+                    BossScenario.SORCERER_RING_RADIUS, angle, size);
+            enemies.add(new Enemy(boss.type, false, pos[0], pos[1], currentWave,
+                    bossDamageBonus(), bossKillHpMultiplier(), BossScenario.SORCERER_MINION));
+        }
     }
 }

@@ -2,6 +2,7 @@ package laststand.entity;
 
 /** Heavier units take less knockback; lighter units get shoved further. */
 public enum WeightClass {
+    FRAIL(2.2),   // Savage enemies: shoved even further than LIGHT
     LIGHT(1.6),
     MEDIUM(1.0),
     HEAVY(0.5);
