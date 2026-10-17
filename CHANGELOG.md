@@ -7,6 +7,70 @@ All notable changes to this project are documented here.
 A big gameplay + presentation update.
 
 ### Added
+- **A grid-snap setting in the Music Editor (G or the SNAP button).** Notes used to snap to their own length (at most a
+  beat), so a note of 1/4 or longer could only start exactly on a beat. The grid is now separate: 1/16 (the default),
+  1/8, 1/4, or AUTO for the old behaviour. The arrow keys nudge by the same grid.
+- **Extra bars in a tune file are no longer dropped quietly.** If the file has bar lines past its `bars=` number, all of
+  them are used and the editor / Sound Test say so (before, the bars after `bars=` were silently ignored).
+- **Chords follow the notes (Music Editor, on by default; F or the CHORDS FOLLOW pill switches it).** When all notes are
+  selected and moved, the chords move with them: a pitch move transposes every chord by the same number of semitones, a move
+  by whole bars slides the chords along by that many bars (an emptied bar becomes "none"), and a part of the tune moved on
+  its own leaves the chords alone. One Ctrl+Z undoes notes and chords together.
+- **Multi-select in the Music Editor.** Ctrl+A selects every note, Shift+click adds or removes one, and Shift+drag on an
+  empty spot draws a selection box. Dragging any selected note, or the arrow keys (Shift+Up/Down = an octave,
+  Shift+Left/Right = a bar), moves them all together: spacing is kept, and the group stops when one note reaches an
+  edge. Delete removes them all, Esc deselects (then leaves), T refuses politely, and one Ctrl+Z undoes a whole group
+  move. **Ctrl+Up / Ctrl+Down** moves every chord a semitone (chords and notes stay independent).
+- **A bar can have no chord** (right-click its chord cell in the Music Editor; `-` in the tune file, also read as
+  `none` / `n`): no bass and no arpeggio for that bar, drums unaffected. Clicking the cell again brings the chord back.
+- **The tune file is forgiving about pasted bars, and says so when something's wrong.** Quotes, trailing commas, `//`
+  comments, curly quotes and lines without `barN=` are accepted; a missing `bars=` line uses as many bars as were given.
+  Previously a file with any of these was silently replaced by the starter tune (the editor and the Sound Test now show
+  the reason in red), and a missing `bpm=` / `chords=` now says what was assumed.
+- **Ties in the Music Editor and the tune file.** Press **T** on a note to tie it to the note touching it on its left:
+  it carries that note on (same pitch) with no new start, which is how a note carries over a bar line. In
+  `laststand_workshop_track.txt` a tie is written `T 1.5` (hold the note before it for 1.5 more beats), next to `R 2.5`
+  for a rest. A tie after a rest or gap is refused with a plain message; deleting the note before a tie turns it back
+  into an ordinary note. Nothing else changes: all 23 sounds are bit-for-bit identical.
+- **In-game SFX Editor for every sound effect.** On the Sound Test, select any sound and press **E** (or click EDIT SOUND).
+  Each effect is a stack of tones (square / triangle / saw / noise / air); edit their wave, timing, pitch slide, volume,
+  fade, vibrato and pulse width, add / duplicate / delete layers, and toggle the 8-bit crunch. A waveform strip shows what
+  will play, Space plays it unsaved, AUTO-PLAY replays after every change. **Save** (Ctrl+S) writes `laststand_sfx.txt` and
+  the **whole game** then plays the edited sound; Discard, RESET TO ORIGINAL, Ctrl+Z and a leave-with-unsaved prompt are there
+  too. Every built-in effect converts to an editable patch and renders bit-for-bit like the original recipe. New classes
+  `fx/SfxPatch` (tone list + its file) and `ui/SfxEditorUI`; new `ui/SoundEditor` interface shared with the Music Editor;
+  new `Sfx` hooks `builtinPatch`, `renderPatch`, `previewPatch`, `reloadSfx`, `hasSfxEdit`.
+- **In-game Music Editor for the hidden "??? 2" track.** On the Sound Test, select "??? 2" and press **E** (or click
+  EDIT TRACK) for a piano roll: click to add notes, drag to move or stretch them, right-click to remove, one chord per
+  bar (the bass and arpeggio follow it), plus tempo, number of bars (4-32), and the bars where the drums and the fuller
+  melody sound come in. PLAY auditions the tune as you edit; **Save** (Ctrl+S) writes `laststand_workshop_track.txt`,
+  **Discard** goes back to the last saved version, Ctrl+Z undoes, and leaving with unsaved edits asks first. "??? 2" plays
+  the saved tune; with no saved file it is the original starter tune, bit for bit. New classes `fx/WorkshopTune`
+  (the editable tune + its text file) and `ui/MusicEditorUI`; new `Sfx` hooks `previewTune`, `stopPreview`,
+  `previewSeconds`, `previewNote`, `reloadWorkshop`. The Sound Test now also passes mouse drags, releases, right-clicks
+  and the wheel through to the editor.
+- **Background music support.** A looping song can play under a game (quietly: about 30% of an effect's volume, so effects
+  stay clear on top). It follows the game: it plays while a game is in progress, including under the shop and pause menus,
+  and is silent on the menus and after game over; **F10** turns it on/off and F9 mutes it with everything else. Nothing
+  plays by default: the two hidden songs are chosen with a secret key combination (see `chooseMusic` in `GamePanel`), and
+  the song that's playing is remembered across menus. The loop is seamless: the version built for looping has its last
+  bar flow on into the first instead of the held ending. New `Sfx` pieces: `playLoop`, `startMusic`, `stopMusic`,
+  `isMusicPlaying`, `currentMusic`, `loopSamplesFor`.
+- **Ctrl+S opens the Sound Test when S is let go** instead of the moment it's pressed (in the Music Editor it still saves
+  straight away).
+- **Loop setting in the Sound Test.** L (or the LOOP pill beside the title) makes songs repeat seamlessly until X.
+- **Secret Sound Test soundboard (Ctrl+S, from any screen).** A MyInstants-style wall of big glossy round buttons, one
+  per sound effect (21), labelled and colour-coded by group. Click one to hear it (or use arrows/WASD + SPACE); R plays
+  them all in order, X stops. A strip shows the selected effect's waveform with a moving playhead, length, peak level,
+  where it's used in-game, synth-vs-WAV source and rate limit. Freezes the game while open and returns you to whatever
+  screen you were on. New `Sfx` hooks: `preview` (skips the rate limit), `silence`, `samplesFor`, `isRecordedOverride`,
+  `isAudioAvailable`.
+- **`air(...)`: smooth, realistic air for the sound synth.** A new kind of line next to `noise(...)`. The chiptune noise
+  flips between just two values (+1/-1) and every sound is rounded to 8-bit steps, which is what makes everything sound
+  "pixel-y". `air(at, dur, f0, f1, vol)` uses smooth random values through a sliding band-pass filter (f0 -> f1 is the
+  centre of the airy band in Hz), and a recipe can set `m.smooth = true` to skip the 8-bit rounding. The Dagger throw now
+  uses it (one short, focused "fwip" of air that dulls as the knife flies away); every other sound is unchanged, bit for
+  bit. `air(...)` takes an optional `.q(x)` to focus the band: low = broad and fuzzy ("sandy"), ~2 = a whoosh, 5+ whistles.
 - **Wave scenarios (wave 6+, hidden in-game).** Non-boss waves from 6 roll one of: *Swarm*
   (30 fragile, fast, weaker-hitting enemies; 3 portals), *Heavy Hitters* (slow, hard-hitting;
   8 with 1 portal, 15 with 2), *Standard* (20 classic enemies), *Power Rangers* (forces 3
@@ -48,12 +112,24 @@ A big gameplay + presentation update.
   beyond the edge is a sky-blue backdrop with slow blocky clouds. The playable cross is wrapped in
   an irregular, textured rock border (3-6 blocks thick, rounded corners; sandstone in Desert) with
   a jagged rocky underside. The border is solid for movement, shots and pathfinding.
+- **Sound effects** -- 21 chiptune-style effects synthesized in code (no audio files), mixed in software and
+  rate-limited; F9 mutes. Menu blips, shots, hits, deaths, hurt, potion, shield, shop buy/error, level-up,
+  ultimate ready / Giant Arrow / Thorns, wave start / boss warning / wave clear, game over. Any effect can be
+  replaced by a WAV in `src/sounds/`. Silent (no crash) when there's no audio device.
 - **Executable JAR** (`release/LastStand-v1.1.5.jar`, `java -jar`, built for Java 17+) plus `build.sh` / `build.bat`
   so anyone can rebuild it, and a `.gitignore`.
 - **Dying destroys the save file** for that mode (even one made earlier in the same run); the
   game-over screen says so.
 
 ### Changed
+- **The level-up jingle plays only once per 5 levels a player obtains** (levels 5, 10, 15, ...). It counts levels
+  gained, so spending LVL at the enchanting wheel doesn't make it play again, gaining several at once plays it once, and
+  each player is counted separately (`LEVEL_UP_SOUND_EVERY` in `GamePanel`).
+- **The wave-start sound is delayed 1 s and the boss warning 0.5 s after their wave begins**, so neither is drowned out by
+  the previous wave's last death sound (`WAVE_START_SOUND_DELAY_MS` / `BOSS_WARN_SOUND_DELAY_MS`). They run on the game
+  clock, so they wait if a menu pauses the game, and are dropped on game over.
+- **A much more dramatic boss warning** (2.2 s instead of 0.7 s): a swelling riser, a huge boom with a crash and a
+  metallic rumble, then a slow doom motif with a clashing note.
 - Window is now 1000x740 (was 1000x700) -- tall enough for the bigger HUD, short enough to leave
   the taskbar/desktop reachable. On shorter screens it shrinks to fit.
 - Playable arena is 55x45 tiles (odd sizes make the cross exactly symmetric: N=S, W=E; horizontal
@@ -62,6 +138,15 @@ A big gameplay + presentation update.
 - **Bosses no longer move at half speed** -- regular speed for their type; specials adjust from there.
 - **Speedy** nerfed 40%: +6% move speed per level (Lv20 is x2.2 instead of x3.0).
 - Savage / Ghastly / Power Rangers odds and speeds retuned (Ghastly: base speed 2.0, scales with waves).
+
+### Fixed
+- **Stuck sound loop.** The mixer used to stop writing to the sound card whenever no effect was playing. Some
+  systems (Windows' DirectSound especially) keep a small circular buffer and just REPLAY it if nothing refills
+  it, so the tail of the last sounds could loop forever -- and muting couldn't stop it, because nothing was
+  being sent to clear. The mixer now always writes a block, silence when idle, so any stale audio is overwritten
+  within a few milliseconds; the card buffer was also halved (about 46 ms) to keep latency low. Verified against a
+  simulated circular-buffer device: the old behaviour loops indefinitely (and survives a mute), the new one is
+  silent within ~23 ms of muting, with ~35 ms from trigger to first sound.
 
 ### Removed
 - **Armored** and **Grow** perks (Rechargeability took one slot; the other is vacant for now).

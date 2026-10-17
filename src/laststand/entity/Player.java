@@ -40,13 +40,13 @@ public class Player extends Entity {
     //     very fast fire rate, no knockback at all, tinier than the Dagger.
     // Tuned-by-feel starting numbers -- easy to retune, all in one place.
     // -------------------------------------------------------------------------------------
-    public static final double DAGGER_MAX_RANGE_PX = 3.0 * Constants.TILE_SIZE; // ~3.0 tiles (was 1.5)
+    public static final double DAGGER_MAX_RANGE_PX = 3.75 * Constants.TILE_SIZE; // ~3.75 tiles (was 3.0, originally 1.5)
     public static final double DAGGER_SPEED_PX = 6.0;    // px/frame -- a controlled toss
     public static final double DAGGER_KNOCKBACK = 4.0;   // small, vs. the bow's ~8
     public static final int DAGGER_PROJECTILE_RADIUS = 4; // a little smaller than an arrow (5)
 
     public static final long COMBAT_PIN_COOLDOWN_MS = 100; // independent of the bow's cooldown
-    public static final double COMBAT_PIN_MAX_RANGE_PX = 1.75 * Constants.TILE_SIZE; // ~1.75 tiles (was 0.75)
+    public static final double COMBAT_PIN_MAX_RANGE_PX = 2.0 * Constants.TILE_SIZE; // ~2.0 tiles (was 1.75, originally 0.75)
     public static final double COMBAT_PIN_SPEED_PX = 10.0; // faster than the Dagger -- a flick, not a throw
     public static final double COMBAT_PIN_KNOCKBACK = 0.0; // none at all
     public static final int COMBAT_PIN_PROJECTILE_RADIUS = 2; // a lot smaller than the Dagger (4)
@@ -404,10 +404,16 @@ public class Player extends Entity {
      *  saves/enchant slots keep working -- only the display name changed to "Dagger Damage"). */
     public int daggerDamage() {
         int base = effectiveDamage();
+        Integer swordAmp = enchants.getOrDefault(EnchantCategory.SWORD, Map.of()).get(EnchantType.SWORD_DAMAGE);
         int bonus = preservedPowerDamageBonus()
-                + (int) Math.round(enchantValue(EnchantType.SWORD_DAMAGE))
+                + (swordAmp == null ? 0 : daggerEnchantBonusFor(weaponTier, swordAmp))
                 + reforgedDamageBonus;
         return base + bonus;
+    }
+
+    /** Dagger Damage I/II/III add +25% / +50% / +75% of the dagger's own tier damage (not of Preserved Power / Reforged). */
+    public static int daggerEnchantBonusFor(WeaponTier tier, int amplifier) {
+        return (int) Math.round(tier.swordDamage * EnchantType.SWORD_DAMAGE.amountFor(amplifier) / 100.0);
     }
 
     /** Base weapon damage (tier-scaled) + Preserved Power's dynamic bonus + Arrow Damage enchant +
@@ -415,10 +421,16 @@ public class Player extends Entity {
      *  needs travel distance. */
     public int arrowDamage() {
         int base = effectiveDamage();
+        Integer bowAmp = enchants.getOrDefault(EnchantCategory.BOW, Map.of()).get(EnchantType.ARROW_DAMAGE);
         int bonus = preservedPowerDamageBonus()
-                + (int) Math.round(enchantValue(EnchantType.ARROW_DAMAGE))
+                + (bowAmp == null ? 0 : arrowEnchantBonusFor(weaponTier, bowAmp))
                 + reforgedDamageBonus;
         return base + bonus;
+    }
+
+    /** Arrow Damage I/II/III add +25% / +50% / +75% of the bow's own tier damage (not of Preserved Power / Reforged). */
+    public static int arrowEnchantBonusFor(WeaponTier tier, int amplifier) {
+        return (int) Math.round(tier.bowDamage * EnchantType.ARROW_DAMAGE.amountFor(amplifier) / 100.0);
     }
 
     /**
@@ -707,10 +719,11 @@ public class Player extends Entity {
 
     public static final int RECHARGE_POINTS_PER_LEVEL = 1; // charge points knocked off the ultimate's cost per level (was 2)
 
-    /** Total ultimate-cooldown reduction from Rechargeability. Nothing consumes this yet -- the
-     *  ultimate itself is still to come -- but the stat is tracked so it's ready when it lands. */
+    /** Total charge knocked off the ultimate's cost by Rechargeability: -1 on levels 1-4, 6-9, 11-14 and 16-19 (16 in all),
+     *  nothing extra on levels 5 / 10 / 15 / 20 -- those boost the Giant Arrow instead (see giantArrowMultiplier). */
     public int ultimateCooldownReduction() {
-        return RECHARGE_POINTS_PER_LEVEL * upgradeLevel(UpgradeType.RECHARGEABILITY);
+        int level = upgradeLevel(UpgradeType.RECHARGEABILITY);
+        return RECHARGE_POINTS_PER_LEVEL * (level - level / 5);
     }
 
     public void activateShield(long nowMs) {
@@ -757,17 +770,16 @@ public class Player extends Entity {
     }
 
     // ================================================================== ULTIMATE
-    // Charged by kills (1 per enemy slain, never by kills the ultimate itself makes); 40 charge, less
-    // 1 per Rechargeability level. Triggered by tapping the weapon key 3 times quickly.
+    // Charged by kills (1 per enemy slain, never by kills the ultimate itself makes); 20 charge, less
+    // 1 per Rechargeability level (except every 5th). Triggered by HOLDING the weapon key (Space / Enter) for half a second.
     // Ranger: GIANT ARROW. Tank: THORNS.
 
-    public static final int ULTIMATE_BASE_COST = 40; // was 100 -- far too long to wait
-    public static final int ULTIMATE_MIN_COST = 10;
-    public static final long ULTIMATE_TAP_WINDOW_MS = 800; // all 3 taps within this
+    public static final int ULTIMATE_BASE_COST = 20; // was 40 (and 100 before that)
+    public static final int ULTIMATE_MIN_COST = 4;   // 20 - the 16 Rechargeability levels that each cut 1
+    public static final long ULTIMATE_HOLD_MS = 500;  // how long the weapon key is held to fire it (half a second)
     public int ultimateCharge = 0;
-    private final long[] ultimateTaps = {-999999, -999999, -999999};
 
-    /** Charge needed to fire the ultimate: 40, minus 1 per Rechargeability level (20 at level 20). */
+    /** Charge needed to fire the ultimate: 20, minus 1 on each Rechargeability level except every 5th (4 at level 20). */
     public int ultimateCost() {
         return Math.max(ULTIMATE_MIN_COST, ULTIMATE_BASE_COST - ultimateCooldownReduction());
     }
@@ -784,28 +796,41 @@ public class Player extends Entity {
         ultimateCharge = Math.min(ultimateCost(), ultimateCharge + amount);
     }
 
+    // ---- hold-to-fire ----
+    private long ultimateHoldStart = -1;
+
+    /** Could the ultimate be started right now? Weapon slot selected, fully charged and -- for the Tank -- neither Shield nor Thorns up
+     *  (the two can't run together). */
+    public boolean canStartUltimate(long nowMs) {
+        if (!alive || selectedSlot != 0 || !ultimateReady()) return false;
+        return !(playerClass == PlayerClass.TANK && (isShieldActive(nowMs) || isThornsActive(nowMs)));
+    }
+
     /**
-     * Call on every fresh press of the weapon key. Remembers the last 3 press times; returns true on the
-     * press that completes a triple-tap (all 3 within ULTIMATE_TAP_WINDOW_MS) while the ultimate is
-     * fully charged. (Just the timestamps of the last 3 key-downs -- nothing fancier is needed.)
+     * Call every frame with whether the weapon key is held and whether it was JUST pressed. The hold only starts from a fresh press made
+     * while the ultimate can be used (so a key already held down when the charge fills up can't fire it by accident), and it is dropped the
+     * instant the key is let go or the ultimate stops being usable. Returns true on the frame the half-second hold completes.
      */
-    public boolean registerUltimateTap(long nowMs) {
-        // Only taps made WHILE it's ready count. Otherwise someone mashing attack when the 100th kill lands
-        // would have the very next tap complete an "old" triple and fire it by accident, with no deliberate
-        // triple-tap at all.
-        if (!ultimateReady()) {
-            java.util.Arrays.fill(ultimateTaps, -999999L);
+    public boolean updateUltimateHold(boolean attackHeld, boolean attackJustPressed, long nowMs) {
+        if (!attackHeld || !canStartUltimate(nowMs)) { ultimateHoldStart = -1; return false; }
+        if (ultimateHoldStart < 0) {
+            if (attackJustPressed) ultimateHoldStart = nowMs;
             return false;
         }
-        ultimateTaps[0] = ultimateTaps[1];
-        ultimateTaps[1] = ultimateTaps[2];
-        ultimateTaps[2] = nowMs;
-        if (ultimateTaps[2] - ultimateTaps[0] <= ULTIMATE_TAP_WINDOW_MS) {
-            java.util.Arrays.fill(ultimateTaps, -999999L); // so one burst of taps can't fire it twice
+        if (nowMs - ultimateHoldStart >= ULTIMATE_HOLD_MS) {
+            ultimateHoldStart = -1;                       // done: the bar goes away whether or not it actually fires (it needs a new press to retry)
             return true;
         }
         return false;
     }
+
+    /** 0 = not holding; otherwise how far the hold has got (0..1). Drives the progress bar under the player. */
+    public double ultimateHoldFraction(long nowMs) {
+        if (ultimateHoldStart < 0) return 0;
+        return Math.max(0.0, Math.min(1.0, (nowMs - ultimateHoldStart) / (double) ULTIMATE_HOLD_MS));
+    }
+
+    public void cancelUltimateHold() { ultimateHoldStart = -1; }
 
     /** Spends the charge. */
     public void consumeUltimate() {
@@ -814,9 +839,10 @@ public class Player extends Entity {
 
     // ---- Tank: Thorns ----
     public static final long THORNS_DURATION_MS = 10_000;
-    public static final long THORNS_PULSE_MS = 500;           // spikes bulge out and back once per pulse; they hit at full extension
+    public static final long THORNS_PULSE_MS = 500;           // spikes bulge out and back once per pulse -- VISUAL ONLY now; damage is retaliation
     public static final double THORNS_DAMAGE_FRACTION = 0.50; // of the Tank's current damage (no crit)
-    public static final double THORNS_MAX_HP_BONUS = 0.10;    // plus 10% of the affected enemy's max HP, each pulse
+    public static final double THORNS_MAX_HP_BONUS = 0.05;      // plus 5% of the attacker's max HP, each retaliation
+    public static final double THORNS_BOSS_MAX_HP_BONUS = 0.02; // ...but only 2% against bosses
     /** While Thorns is up the Tank takes 80% less damage from everything -- applied to the WHOLE hit, so a
      *  Savage hit's %-of-Max-HP bonus is cut too. (Not immunity: the regular Shield is the only full block.) */
     public static final double THORNS_DAMAGE_RESISTANCE = 0.80;
@@ -824,7 +850,6 @@ public class Player extends Entity {
     public static final double THORNS_KNOCKBACK = 7.0;
     private long thornsStartedAt = -1, thornsActiveUntil = -1;
     private long shieldFrozenTotalMs = 0;
-    private long lastThornsPulseIdx = 0;
 
     private void settleThorns(long nowMs) {
         if (thornsStartedAt >= 0 && nowMs >= thornsActiveUntil) {
@@ -848,23 +873,28 @@ public class Player extends Entity {
 
     /** Starts Thorns if this is a Tank with a full charge. Returns true if it went off. */
     public boolean activateThorns(long nowMs) {
-        if (playerClass != PlayerClass.TANK || !ultimateReady() || isThornsActive(nowMs)) return false;
+        if (playerClass != PlayerClass.TANK || !ultimateReady() || isThornsActive(nowMs) || isShieldActive(nowMs)) return false; // no Thorns while the Shield is up
         consumeUltimate();
         thornsStartedAt = nowMs;
         thornsActiveUntil = nowMs + THORNS_DURATION_MS;
-        lastThornsPulseIdx = 0;
+        pendingThornsRetaliation.clear();
+        ultimateHoldStart = -1;
         return true;
     }
 
-    /** True once per pulse while Thorns is running (at the moment the spikes are fully out). */
-    public boolean thornsPulseDue(long nowMs) {
-        if (!isThornsActive(nowMs)) return false;
-        long idx = (thornsElapsedMs(nowMs) + THORNS_PULSE_MS / 2) / THORNS_PULSE_MS;
-        if (idx > lastThornsPulseIdx) {
-            lastThornsPulseIdx = idx;
-            return true;
-        }
-        return false;
+    /** Enemies that just landed a melee hit on this Tank while Thorns was up; GamePanel retaliates against
+     *  each one next tick (see GamePanel.updateThorns) and clears the list. */
+    public final List<Enemy> pendingThornsRetaliation = new ArrayList<>();
+
+    /** Called by an enemy right after its melee hit landed. Does nothing unless this is a Tank with Thorns up. */
+    public void registerThornsRetaliation(Enemy attacker, long nowMs) {
+        if (playerClass != PlayerClass.TANK || !isThornsActive(nowMs)) return;
+        if (!pendingThornsRetaliation.contains(attacker)) pendingThornsRetaliation.add(attacker);
+    }
+
+    /** Fraction of an enemy's Max HP that one retaliation takes: 5%, or 2% for bosses. */
+    public static double thornsMaxHpBonusFor(Enemy e) {
+        return e.boss ? THORNS_BOSS_MAX_HP_BONUS : THORNS_MAX_HP_BONUS;
     }
 
     /** Flat part of a Thorns hit: 50% of the Tank's current damage, ignoring crit. */
@@ -874,8 +904,18 @@ public class Player extends Entity {
 
     // ---- Ranger: Giant Arrow ----
     /** The giant arrow's damage: 150% of the Ranger's current arrow damage, ignoring crit. */
+    /** Giant Arrow's damage as a multiple of arrow damage: 150% base; Rechargeability levels 5 / 10 / 15 / 20 raise it to 175% / 200% / 250% / 300%. */
+    public double giantArrowMultiplier() {
+        int level = upgradeLevel(UpgradeType.RECHARGEABILITY);
+        if (level >= 20) return 3.00;
+        if (level >= 15) return 2.50;
+        if (level >= 10) return 2.00;
+        if (level >= 5) return 1.75;
+        return laststand.entity.GiantArrow.DAMAGE_MULT;
+    }
+
     public int giantArrowDamage() {
-        return (int) Math.round(arrowDamage() * laststand.entity.GiantArrow.DAMAGE_MULT);
+        return (int) Math.round(arrowDamage() * giantArrowMultiplier());
     }
 
     /** Returns true if the purchase went through (wasn't already unlocked, had enough silver). */
@@ -929,6 +969,16 @@ public class Player extends Entity {
         if (nowMs - lastHealFlashAt < 300) {
             g.setColor(new Color(60, 220, 80, 140));
             g.drawRect(sx - 2, sy - 2, size + 4, size + 4);
+        }
+        double hold = ultimateHoldFraction(nowMs);       // holding the weapon key to fire the ultimate: a half-second bar under the player
+        if (hold > 0) {
+            int bw = size + 24, bh = 7, bx = sx + size / 2 - bw / 2, by = sy + size + 6;
+            g.setColor(new Color(0, 0, 0, 180));
+            g.fillRoundRect(bx - 2, by - 2, bw + 4, bh + 4, 8, 8);
+            g.setColor(playerClass == PlayerClass.TANK ? new Color(235, 80, 80) : new Color(250, 210, 70));
+            g.fillRoundRect(bx, by, (int) Math.round(bw * hold), bh, 5, 5);
+            g.setColor(new Color(255, 255, 255, 200));
+            g.drawRoundRect(bx - 2, by - 2, bw + 4, bh + 4, 8, 8);
         }
     }
 

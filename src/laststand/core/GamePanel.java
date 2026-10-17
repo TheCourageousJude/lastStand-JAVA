@@ -2,6 +2,8 @@ package laststand.core;
 
 import laststand.entity.*;
 import laststand.fx.DamagePopup;
+import laststand.fx.Sfx;
+import laststand.fx.WorkshopTune;
 import laststand.save.SaveData;
 import laststand.save.SaveManager;
 import laststand.shop.ArmorTier;
@@ -16,6 +18,7 @@ import laststand.shop.UpgradeType;
 import laststand.shop.Wallet;
 import laststand.shop.WeaponTier;
 import laststand.ui.HUD;
+import laststand.ui.SoundTestUI;
 import laststand.wave.WaveManager;
 import laststand.world.Arena;
 import laststand.world.Sky;
@@ -45,6 +48,11 @@ public class GamePanel extends JPanel {
     private final HUD hud = new HUD();
     private final ShopUI shopUI = new ShopUI();
     private final EnchantUI enchantUI = new EnchantUI();
+    // Secret Sound Test screen (Ctrl+S from anywhere). An overlay rather than a GameState so it can sit on top of
+    // whatever is showing -- menu, shop, mid-wave -- and put you straight back there; the sim is frozen while it's open.
+    private final SoundTestUI soundTest = new SoundTestUI();
+    private boolean soundTestOpen = false;
+    private long soundTestToggledAt = 0;
 
     // Per-player wallets: "Player 1 and player 2 has their own respective orbs"
     private final Wallet walletP1 = new Wallet();
@@ -91,7 +99,7 @@ public class GamePanel extends JPanel {
     private boolean confirmingNewGame = false;
     private boolean confirmNewGameKeepSave = true; // default to the non-destructive choice
     private String pendingNewGameSummary = "";
-    private String[] menuItems = {"Play", "Load Save", "Player 2: OFF", "Options", "Exit"};
+    private String[] menuItems = {"Play", "Load Save", "Player 2: OFF", "How to Play", "Options", "Exit"};
     private int menuIndex = 0;
     private boolean p2Enabled = false;
     private ArenaTheme theme = ArenaTheme.FOREST;
@@ -109,6 +117,30 @@ public class GamePanel extends JPanel {
     private final List<Player> players = new ArrayList<>();
     private final List<Projectile> projectiles = new ArrayList<>();
     private final List<GiantArrow> giantArrows = new ArrayList<>(); // the Ranger's ultimate
+
+    // ---- sound bookkeeping: state remembered from the previous tick so changes can be turned into sounds ----
+    private final int[] lastHp = new int[3];
+    private final boolean[] lastUltReady = new boolean[3];
+    private int lastWaveSeen = -1;
+
+    // ---- sound timing. All of it runs on the game clock (virtualNow), so it freezes along with the sim whenever a menu pauses the game ----
+    /** The new-wave blip comes this long after a wave begins (the previous wave's last death sound would drown it out otherwise)... */
+    private static final long WAVE_START_SOUND_DELAY_MS = 1000;
+    /** ...and the boss warning this long after a boss wave begins. */
+    private static final long BOSS_WARN_SOUND_DELAY_MS = 500;
+    private Sfx.Id pendingWaveSound = null;
+    private long pendingWaveSoundAt = 0;
+    /** The level-up jingle plays only once per this many levels a player has OBTAINED (spending LVL on enchants doesn't count against it). */
+    private static final int LEVEL_UP_SOUND_EVERY = 5;
+    private final int[] levelsGained = new int[3];
+    /** Background music while a game is in progress: a looping tune. F10 turns it on and off. */
+    /** The two hidden songs. Nothing plays by default: hold Ctrl+S and press 1 or 2 during a game to play one (see chooseMusic). */
+    private static final Sfx.Id[] HIDDEN_TRACKS = {Sfx.Id.SECRET_TRACK, Sfx.Id.SECRET_TRACK_2};
+    private Sfx.Id musicTrack = null;                                    // the song chosen for the background music (null = none)
+    private boolean musicEnabled = true;                                 // F10
+    private boolean ctrlSArmed = false, ctrlSChordUsed = false;          // Ctrl+S is down / a 1 or 2 came with it (so letting go doesn't open the Sound Test)
+    private String soundToast = null;
+    private long soundToastUntil = 0;
     private final List<DamagePopup> damagePopups = new ArrayList<>();
     private int camX, camY;
 
@@ -157,6 +189,47 @@ public class GamePanel extends JPanel {
         getInputMap(WHEN_IN_FOCUSED_WINDOW).put(javax.swing.KeyStroke.getKeyStroke(KeyEvent.VK_F11, 0), "toggleFullscreen");
         getInputMap(WHEN_IN_FOCUSED_WINDOW).put(javax.swing.KeyStroke.getKeyStroke(KeyEvent.VK_ENTER, java.awt.event.InputEvent.ALT_DOWN_MASK), "toggleFullscreen");
         getActionMap().put("toggleFullscreen", toggleFs);
+        // F9 mutes / unmutes the sound effects (M is taken -- it picks the Bow in the enchanting screen).
+        getInputMap(WHEN_IN_FOCUSED_WINDOW).put(javax.swing.KeyStroke.getKeyStroke(KeyEvent.VK_F9, 0), "toggleSound");
+        getActionMap().put("toggleSound", new javax.swing.AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent ev) {
+                boolean nowMuted = Sfx.toggleMute();
+                soundToast = nowMuted ? "Sound: OFF" : "Sound: ON";
+                soundToastUntil = System.currentTimeMillis() + 1600;
+                if (!nowMuted) Sfx.play(Sfx.Id.MENU_SELECT); // a blip so you can hear that it's back on
+            }
+        });
+        // F10 turns the background music on / off (F9 mutes everything, music included).
+        getInputMap(WHEN_IN_FOCUSED_WINDOW).put(javax.swing.KeyStroke.getKeyStroke(KeyEvent.VK_F10, 0), "toggleMusic");
+        getActionMap().put("toggleMusic", new javax.swing.AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent ev) {
+                musicEnabled = !musicEnabled;
+                if (!musicEnabled) Sfx.stopMusic();
+                soundToast = musicEnabled ? "Music: ON" : "Music: OFF";
+                soundToastUntil = System.currentTimeMillis() + 1600;
+            }
+        });
+        // F7 / F8: music volume down / up -- but ONLY while a hidden song is playing as the background music (it's part of the secret,
+        // so with no hidden song chosen these keys do nothing at all, not even a message).
+        getInputMap(WHEN_IN_FOCUSED_WINDOW).put(javax.swing.KeyStroke.getKeyStroke(KeyEvent.VK_F7, 0), "musicVolumeDown");
+        getActionMap().put("musicVolumeDown", new javax.swing.AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent ev) { adjustMusicVolume(-MUSIC_VOLUME_STEP_PCT); }
+        });
+        getInputMap(WHEN_IN_FOCUSED_WINDOW).put(javax.swing.KeyStroke.getKeyStroke(KeyEvent.VK_F8, 0), "musicVolumeUp");
+        getActionMap().put("musicVolumeUp", new javax.swing.AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent ev) { adjustMusicVolume(MUSIC_VOLUME_STEP_PCT); }
+        });
+        // Ctrl+S: secret Sound Test screen (toggle). Same key-binding route as F9/F11 so it works on every screen.
+        // (Ctrl+S itself is read in updateCtrlS(): a tap opens it when S is let go, and Ctrl+S+1 / +2 choose the hidden songs. This action does the toggle directly.)
+        getActionMap().put("soundTest", new javax.swing.AbstractAction() {
+            @Override public void actionPerformed(java.awt.event.ActionEvent ev) {
+                long t = System.currentTimeMillis();
+                if (t - soundTestToggledAt < 400) return; // holding Ctrl+S auto-repeats; don't flicker open/closed
+                soundTestToggledAt = t;
+                if (soundTestOpen && soundTest.isEditing()) { soundTest.editorSave(); return; }   // in the Music Editor, Ctrl+S saves
+                setSoundTestOpen(!soundTestOpen);
+            }
+        });
         addMouseListener(new MouseAdapter() {
             @Override
             public void mousePressed(MouseEvent e) {
@@ -164,11 +237,36 @@ public class GamePanel extends JPanel {
                 // panel pixels -> design-layout coordinates (undo the display scale and the centering offset)
                 int mx = (int) Math.round(e.getX() / scale) - designOffsetX();
                 int my = (int) Math.round(e.getY() / scale) - designOffsetY();
+                if (soundTestOpen) { soundTest.click(mx, my, e.getButton()); return; }
                 if (state == GameState.GAME_OVER && gameOverButtonBounds != null
                         && gameOverButtonBounds.contains(mx, my)) {
                     returnToMenuFromGameOver();
                 }
             }
+        });
+
+        Thread musicWarmup = new Thread(() -> { for (Sfx.Id id : HIDDEN_TRACKS) Sfx.loopSamplesFor(id); }, "music-warmup"); // renders both tunes once (~0.3 s each) off the game thread
+        musicWarmup.setDaemon(true);
+        musicWarmup.start();
+        addMouseMotionListener(new java.awt.event.MouseMotionAdapter() {
+            @Override public void mouseMoved(MouseEvent e) {
+                if (soundTestOpen) soundTest.hover((int) Math.round(e.getX() / scale) - designOffsetX(),
+                        (int) Math.round(e.getY() / scale) - designOffsetY());
+            }
+            @Override public void mouseDragged(MouseEvent e) {   // the Music Editor's note dragging
+                if (soundTestOpen) soundTest.drag((int) Math.round(e.getX() / scale) - designOffsetX(),
+                        (int) Math.round(e.getY() / scale) - designOffsetY());
+            }
+        });
+        addMouseListener(new MouseAdapter() {
+            @Override public void mouseReleased(MouseEvent e) {
+                if (soundTestOpen) soundTest.release((int) Math.round(e.getX() / scale) - designOffsetX(),
+                        (int) Math.round(e.getY() / scale) - designOffsetY());
+            }
+        });
+        addMouseWheelListener(e -> {
+            if (soundTestOpen) soundTest.wheel((int) Math.round(e.getX() / scale) - designOffsetX(),
+                    (int) Math.round(e.getY() / scale) - designOffsetY(), e.getWheelRotation(), e.isShiftDown());
         });
 
         Timer timer = new Timer(1000 / Constants.FPS, e -> {
@@ -197,8 +295,16 @@ public class GamePanel extends JPanel {
     /** True while the sim is frozen because a menu is open and "pause during shop/enchant/settings"
      *  is ON -- mirrors the early-return conditions in tickPlaying() exactly. */
     private boolean isSimulationPaused() {
+        if (soundTestOpen) return true; // the Sound Test freezes the game clock, whatever screen it's on top of
         if (state != GameState.PLAYING || !pauseDuringMenus) return false;
         return shopOpen || enchantingPlayerNumber != 0 || pauseMenuOpen;
+    }
+
+    private void setSoundTestOpen(boolean open) {
+        if (open == soundTestOpen) return;
+        soundTestOpen = open;
+        input.consumeAllHeld(); // the S of Ctrl+S (and anything else held) must not leak into the screen underneath
+        if (open) { Sfx.stopMusic(); soundTest.open(); } else soundTest.close(); // (the music picks up again by itself once it's closed)
     }
 
     private void tick() {
@@ -210,6 +316,12 @@ public class GamePanel extends JPanel {
         }
         long now = virtualNow;
         try {
+            updateCtrlS();
+            if (soundTestOpen) {
+                if (soundTest.tick(input)) setSoundTestOpen(false);
+                return;
+            }
+            updateMusic();
             switch (state) {
                 case MAIN_MENU -> tickMainMenu();
                 case OPTIONS -> tickOptions();
@@ -229,6 +341,15 @@ public class GamePanel extends JPanel {
     }
 
     private void tickMainMenu() {
+        if (howToPlayOpen) {                                                         // the How to Play screen, opened from the menu
+            if (input.wasJustPressed(KeyEvent.VK_ESCAPE)) {
+                input.consume(KeyEvent.VK_ESCAPE);
+                howToPlayOpen = false;
+                return;
+            }
+            tickHowToPlay();
+            return;
+        }
         if (confirmingNewGame) {
             if (input.wasJustPressed(KeyEvent.VK_A) || input.wasJustPressed(KeyEvent.VK_LEFT)
                     || input.wasJustPressed(KeyEvent.VK_D) || input.wasJustPressed(KeyEvent.VK_RIGHT)) {
@@ -283,23 +404,27 @@ public class GamePanel extends JPanel {
         }
         if (input.wasJustPressed(KeyEvent.VK_W) || input.wasJustPressed(KeyEvent.VK_UP)) {
             menuIndex = (menuIndex + menuItems.length - 1) % menuItems.length;
+            Sfx.play(Sfx.Id.MENU_MOVE);
             input.consume(KeyEvent.VK_W);
             input.consume(KeyEvent.VK_UP);
         }
         if (input.wasJustPressed(KeyEvent.VK_S) || input.wasJustPressed(KeyEvent.VK_DOWN)) {
             menuIndex = (menuIndex + 1) % menuItems.length;
+            Sfx.play(Sfx.Id.MENU_MOVE);
             input.consume(KeyEvent.VK_S);
             input.consume(KeyEvent.VK_DOWN);
         }
         if (input.wasJustPressed(KeyEvent.VK_SPACE) || input.wasJustPressed(KeyEvent.VK_ENTER)) {
             input.consume(KeyEvent.VK_SPACE);
             input.consume(KeyEvent.VK_ENTER);
+            Sfx.play(Sfx.Id.MENU_SELECT);
             switch (menuIndex) {
                 case 0 -> openNewGameConfirmation(); // straight to Character Select if no save exists
                 case 1 -> openLoadConfirmation(); // no-op if there's no save yet
                 case 2 -> { p2Enabled = !p2Enabled; menuItems[2] = "Player 2: " + (p2Enabled ? "ON" : "OFF"); }
-                case 3 -> state = GameState.OPTIONS;
-                case 4 -> System.exit(0);
+                case 3 -> { howToPlayOpen = true; howToPlaySection = 0; howToPlayScroll = 0; } // same screen as in the pause menu
+                case 4 -> state = GameState.OPTIONS;
+                case 5 -> System.exit(0);
             }
         }
     }
@@ -377,6 +502,7 @@ public class GamePanel extends JPanel {
             }
             if (input.wasJustPressed(KeyEvent.VK_SPACE)) {
                 p1Ready = true;
+                Sfx.play(Sfx.Id.MENU_SELECT);
                 input.consume(KeyEvent.VK_SPACE);
             }
         }
@@ -388,6 +514,7 @@ public class GamePanel extends JPanel {
             }
             if (input.wasJustPressed(KeyEvent.VK_ENTER)) {
                 p2Ready = true;
+                Sfx.play(Sfx.Id.MENU_SELECT);
                 input.consume(KeyEvent.VK_ENTER);
             }
         }
@@ -406,6 +533,7 @@ public class GamePanel extends JPanel {
         players.clear();
         projectiles.clear();
         giantArrows.clear();
+        resetSoundTrackers();
 
         double cx = arena.centerX();
         double cy = arena.centerY();
@@ -459,6 +587,7 @@ public class GamePanel extends JPanel {
         players.clear();
         projectiles.clear();
         giantArrows.clear();
+        resetSoundTrackers();
         double cx = arena.centerX();
         double cy = arena.centerY();
 
@@ -567,6 +696,7 @@ public class GamePanel extends JPanel {
 
         if (shopOpen) {
             shopOpen = false;
+            Sfx.play(Sfx.Id.MENU_MOVE);
             return;
         }
         if (enchantingPlayerNumber != 0) {
@@ -585,6 +715,7 @@ public class GamePanel extends JPanel {
             return;
         }
         shopOpen = true;
+        Sfx.play(Sfx.Id.MENU_SELECT);
     }
 
     /**
@@ -702,6 +833,11 @@ public class GamePanel extends JPanel {
                 lines.add("MOVEMENT & ATTACK");
                 lines.add("P1: [W][A][S][D] move   [SPACE] attack (melee swing / fire arrow)");
                 lines.add("P2: [Arrow Keys] move   [ENTER] attack");
+                lines.add("");
+                lines.add("ULTIMATE ABILITY");
+                lines.add("Kills charge it (the box beside your hotbar fills up). Once it's full, HOLD [SPACE] (P1) or [ENTER] (P2) for half a second with the weapon slot selected: a bar fills under you, and letting go early cancels it.");
+                lines.add("Ranger: Giant Arrow.   Tank: Thorns -- enemies that hit you take damage back.");
+                lines.add("The Tank can't use the Shield while Thorns is up, and can't start Thorns while the Shield is up.");
                 lines.add("");
                 lines.add("HOTBAR / INVENTORY SLOTS");
                 lines.add("P1: [1][2][3][4] select slot        P2: [0][9][8][7] select slot");
@@ -835,21 +971,22 @@ public class GamePanel extends JPanel {
         }
 
         for (Player p : players) {
-            if (enchantingPlayerNumber == p.playerNumber) continue; // frozen; handled by tickEnchanting()
+            if (enchantingPlayerNumber == p.playerNumber) { p.cancelUltimateHold(); continue; } // frozen; handled by tickEnchanting()
             // BUG FIX: shop and the pause/Settings menu are shared, screen-covering modals -- both
             // players must be fully immobilized while either is open, even when "pause during
             // shop/enchant/settings" is OFF and the rest of the world (enemies included) keeps
             // running. Only enchanting was correctly gated before; shop/pause menu let movement
             // and attacks go through underneath the overlay.
-            if (shopOpen || pauseMenuOpen) continue;
+            if (shopOpen || pauseMenuOpen) { p.cancelUltimateHold(); continue; }
 
             p.update(input, arena);
             boolean justPressed = (p.playerNumber == 1) ? input.p1AttackJustPressed() : input.p2AttackJustPressed();
 
-            // ULTIMATE: tapping the weapon key 3 times quickly (all within ~0.8s) while the ultimate is
-            // fully charged. Only the weapon slot counts, so item keys never trigger it by accident. The
-            // third tap fires the ultimate INSTEAD of a normal attack; the first two still attack normally.
-            if (p.selectedSlot == 0 && justPressed && p.registerUltimateTap(now) && activateUltimate(p, now)) {
+            // ULTIMATE: HOLD the weapon key (Space for P1, Enter for P2) for half a second while the ultimate is fully charged.
+            // A progress bar fills under the player and disappears if the key is let go early or once it fires. Only the weapon
+            // slot counts, and a Tank can't start it while its Shield is up. (The press that starts the hold still attacks normally.)
+            boolean attackHeld = (p.playerNumber == 1) ? input.p1Attack() : input.p2Attack();
+            if (p.updateUltimateHold(attackHeld, justPressed, now) && activateUltimate(p, now)) {
                 continue;
             }
 
@@ -900,6 +1037,7 @@ public class GamePanel extends JPanel {
             }
         }
 
+        updateSoundTriggers();
         updateProjectiles(now);
         updateGiantArrows(now);
         updateThorns(now);
@@ -933,6 +1071,8 @@ public class GamePanel extends JPanel {
             walletP2.reset();
             lastWavesCompletedSeen = waveManager.wavesCompleted; // resync so no stale orbs get awarded later
             state = GameState.GAME_OVER;
+            pendingWaveSound = null;
+            Sfx.play(Sfx.Id.GAME_OVER);
             requestFocusInWindow(); // make sure SPACE/click both work immediately on this screen
         }
 
@@ -951,13 +1091,17 @@ public class GamePanel extends JPanel {
             if (input.wasJustPressed(KeyEvent.VK_W)) {
                 input.consume(KeyEvent.VK_W);
                 p1ShopIndex = Math.max(0, p1ShopIndex - 1);
+                Sfx.play(Sfx.Id.MENU_MOVE);
             }
             if (input.wasJustPressed(KeyEvent.VK_S)) {
                 input.consume(KeyEvent.VK_S);
                 p1ShopIndex = Math.min(p1Items.size() - 1, p1ShopIndex + 1);
+                Sfx.play(Sfx.Id.MENU_MOVE);
             }
             if (input.p1AttackJustPressed() && p1ShopIndex < p1Items.size()) {
+                int before = walletTotal(walletP1);
                 p1Items.get(p1ShopIndex).activate();
+                Sfx.play(walletTotal(walletP1) != before ? Sfx.Id.BUY : Sfx.Id.ERROR); // spent something = bought it
             }
         }
 
@@ -965,23 +1109,39 @@ public class GamePanel extends JPanel {
             if (input.wasJustPressed(KeyEvent.VK_UP)) {
                 input.consume(KeyEvent.VK_UP);
                 p2ShopIndex = Math.max(0, p2ShopIndex - 1);
+                Sfx.play(Sfx.Id.MENU_MOVE);
             }
             if (input.wasJustPressed(KeyEvent.VK_DOWN)) {
                 input.consume(KeyEvent.VK_DOWN);
                 p2ShopIndex = Math.min(p2Items.size() - 1, p2ShopIndex + 1);
+                Sfx.play(Sfx.Id.MENU_MOVE);
             }
             if (input.p2AttackJustPressed() && p2ShopIndex < p2Items.size()) {
+                int before = walletTotal(walletP2);
                 p2Items.get(p2ShopIndex).activate();
+                Sfx.play(walletTotal(walletP2) != before ? Sfx.Id.BUY : Sfx.Id.ERROR);
             }
         }
 
         // Upgrade row: same hotbar-style keys as the inventory (1-4 / 0,9,8,7), but a direct
         // one-press buy/reroll here rather than select-then-use, since the shop is already paused.
-        if (p1 != null) handlePerkKey(p1, walletP1, input.p1SlotJustPressed());
-        if (p2Enabled && p2 != null) handlePerkKey(p2, walletP2, input.p2SlotJustPressed());
+        if (p1 != null) perkKeyWithSound(p1, walletP1, input.p1SlotJustPressed());
+        if (p2Enabled && p2 != null) perkKeyWithSound(p2, walletP2, input.p2SlotJustPressed());
 
         // Z/X/C and comma/period/slash are intentionally NOT bound here -- reserved for the
         // upcoming enchanting system. Armor purchase lives in the regular W/S+SPACE shop list now.
+    }
+
+    private static int walletTotal(Wallet w) {
+        return w.darkOrbs + w.silverOrbs + w.yellowOrbs;
+    }
+
+    /** A perk-row key press, with a "bought it" / "couldn't" sound (spent orbs or LVLs = it worked). */
+    private void perkKeyWithSound(Player p, Wallet w, int slot) {
+        if (slot < 0) return;
+        int orbs = walletTotal(w), lvl = p.level;
+        handlePerkKey(p, w, slot);
+        Sfx.play(walletTotal(w) != orbs || p.level != lvl ? Sfx.Id.BUY : Sfx.Id.ERROR);
     }
 
     private void handlePerkKey(Player p, Wallet w, int slot) {
@@ -1115,6 +1275,7 @@ public class GamePanel extends JPanel {
     private void awardWaveCompletionOrbs() {
         int delta = waveManager.wavesCompleted - lastWavesCompletedSeen;
         if (delta <= 0) return;
+        Sfx.play(Sfx.Id.WAVE_CLEAR);
 
         // "The remaining downed player can be resurrected in the next round if that round is
         // successful" -- reaching here means a wave WAS just cleared (with at least one player
@@ -1161,8 +1322,12 @@ public class GamePanel extends JPanel {
      *  since it needs its own cooldown and must not reset back to slot 0 each shot. */
     private void useSelectedItem(Player p, long now) {
         switch (p.selectedSlot) {
-            case 1 -> p.usePotion(now);
-            case 2 -> p.activateShield(now);
+            case 1 -> Sfx.play(p.usePotion(now) ? Sfx.Id.POTION : Sfx.Id.ERROR); // ERROR: nothing to heal / empty / cooling down
+            case 2 -> {
+                boolean wasOn = p.isShieldActive(now);
+                p.activateShield(now);
+                Sfx.play(!wasOn && p.isShieldActive(now) ? Sfx.Id.SHIELD_ON : Sfx.Id.ERROR);
+            }
         }
     }
 
@@ -1178,6 +1343,7 @@ public class GamePanel extends JPanel {
     /** fromUltimate: the kill was made by a Giant Arrow or by Thorns -- it still pays out normally, but
      *  does NOT count toward recharging the ultimate. */
     private void onEnemyKilled(Enemy enemy, Player killer, boolean fromUltimate) {
+        Sfx.play(Sfx.Id.ENEMY_DEATH);
         if (enemy.boss) {
             walletP1.addYellowOrbs(1);
             if (p2Enabled) walletP2.addYellowOrbs(1);
@@ -1193,7 +1359,9 @@ public class GamePanel extends JPanel {
         // the game (and wave counter) resets, since this is computed off the live wave number.
         // Bosses are worth 5x this, on top of everything else a boss kill already grants above.
         int baseExp = 30 + 5 * (waveManager.currentWave - 1);
+        int levelBefore = killer.level;
         killer.addExp(enemy.boss ? baseExp * 5 : baseExp);
+        if (killer.level > levelBefore && levelUpSoundDue(killer.playerNumber, killer.level - levelBefore)) Sfx.play(Sfx.Id.LEVEL_UP);
 
         // Innate Talent (the RECOVERY perk). Tank: heals 1% of Max HP per level (up to 20%) on a kill.
         // Ranger's half is an arrow-saving chance rolled when a shot is fired (see Player.tryAttack).
@@ -1203,12 +1371,130 @@ public class GamePanel extends JPanel {
         }
     }
 
+    // ------------------------------------------------------------- sound triggers
+
+    /** Turns changes since the last tick into sounds: someone got hurt, an ultimate just filled, a new wave began. */
+    private void updateSoundTriggers() {
+        for (Player p : players) {
+            int i = p.playerNumber;
+            if (lastHp[i] > 0 && p.health < lastHp[i]) Sfx.play(Sfx.Id.PLAYER_HURT);
+            lastHp[i] = p.health;
+            boolean ready = p.ultimateReady();
+            if (ready && !lastUltReady[i]) Sfx.play(Sfx.Id.ULTIMATE_READY);
+            lastUltReady[i] = ready;
+        }
+        int wave = waveManager.currentWave;
+        if (wave != lastWaveSeen) {
+            if (lastWaveSeen != -1) {                       // schedule the sound instead of playing it on the spot (see the delays above)
+                boolean boss = waveManager.bossWave;
+                pendingWaveSound = boss ? Sfx.Id.BOSS_WARN : Sfx.Id.WAVE_START;
+                pendingWaveSoundAt = virtualNow + (boss ? BOSS_WARN_SOUND_DELAY_MS : WAVE_START_SOUND_DELAY_MS);
+            }
+            lastWaveSeen = wave;
+        }
+        if (pendingWaveSound != null && virtualNow >= pendingWaveSoundAt) {
+            Sfx.play(pendingWaveSound);
+            pendingWaveSound = null;
+        }
+    }
+
+    /**
+     * Counts levels a player has obtained and says whether this gain just crossed a multiple of LEVEL_UP_SOUND_EVERY
+     * (gaining several levels at once still counts, and only plays the jingle once).
+     */
+    private boolean levelUpSoundDue(int playerNumber, int levelsJustGained) {
+        int before = levelsGained[playerNumber];
+        levelsGained[playerNumber] += levelsJustGained;
+        return levelsGained[playerNumber] / LEVEL_UP_SOUND_EVERY > before / LEVEL_UP_SOUND_EVERY;
+    }
+
+    /** Keeps the background music in step with the game: playing while a game is in progress, silent on the menus and game over. */
+    private void updateMusic() {
+        boolean want = musicEnabled && musicTrack != null && state == GameState.PLAYING;
+        if (want && Sfx.currentMusic() != musicTrack) Sfx.startMusic(musicTrack);
+        else if (!want && Sfx.isMusicPlaying()) Sfx.stopMusic();
+    }
+
+    /**
+     * Ctrl+S, read from the key state. A TAP opens (or closes) the Sound Test when S is let go; HOLD Ctrl+S and press 1 or 2 and
+     * it plays hidden song 1 or 2 as the background music instead (the same again turns it off). Inside the Music Editor,
+     * Ctrl+S saves, straight away, as it always did.
+     */
+    private void updateCtrlS() {
+        boolean combo = input.isHeld(KeyEvent.VK_CONTROL) && input.isHeld(KeyEvent.VK_S);
+        boolean editing = soundTestOpen && soundTest.isEditing();
+        if (combo && !ctrlSArmed) {
+            ctrlSArmed = true;
+            ctrlSChordUsed = false;
+            if (editing) { soundTest.editorSave(); ctrlSChordUsed = true; }          // in the Music Editor: save, and don't toggle anything when S is let go
+        }
+        if (ctrlSArmed && combo && !editing) {
+            for (int n = 1; n <= HIDDEN_TRACKS.length; n++) {
+                int k1 = KeyEvent.VK_0 + n, k2 = KeyEvent.VK_NUMPAD0 + n;
+                if (input.wasJustPressed(k1) || input.wasJustPressed(k2)) {
+                    if (input.isHeld(k1)) input.consume(k1);                         // (only keys that are really down: "using up" a key that isn't
+                    if (input.isHeld(k2)) input.consume(k2);                         //  would leave it stuck as used up until it was next pressed)
+                    ctrlSChordUsed = true;
+                    chooseMusic(n);
+                }
+            }
+        }
+        if (ctrlSArmed && !combo) {
+            ctrlSArmed = false;
+            if (!ctrlSChordUsed) setSoundTestOpen(!soundTestOpen);
+        }
+    }
+
+    private static final int MUSIC_VOLUME_STEP_PCT = 10;
+
+    /** F7 / F8. Works only while a hidden song is chosen and the music is on; otherwise it silently does nothing. */
+    private void adjustMusicVolume(int deltaPct) {
+        if (musicTrack == null || !musicEnabled) return;
+        Sfx.setMusicVolumePct(Sfx.musicVolumePct() + deltaPct);
+        soundToast = "Music volume: " + Sfx.musicVolumePct() + "%" + (Sfx.musicVolumePct() == Sfx.MUSIC_VOLUME_MAX_PCT ? " (max)" : "");
+        soundToastUntil = System.currentTimeMillis() + 1400;
+    }
+
+    /** Picks hidden song n (1 or 2) as the background music; picking the one that's already playing turns the music off. */
+    private void chooseMusic(int n) {
+        Sfx.Id id = HIDDEN_TRACKS[n - 1];
+        String what;
+        if (musicTrack == id && musicEnabled) {
+            musicTrack = null;
+            Sfx.stopMusic();
+            what = "Music: off";
+        } else if (Sfx.loopSamplesFor(id) == null) {                                   // e.g. the workshop tune has a mistake in it
+            String why = Sfx.errorFor(id);                                            // the tune's own error, if it has one
+            if (why == null && n == 2) why = WorkshopTune.loadProblem();
+            what = "Hidden song " + n + " can't play" + (why != null ? ": " + why : "");
+            if (what.length() > 110) what = what.substring(0, 109) + "\u2026";
+        } else {
+            musicTrack = id;
+            musicEnabled = true;
+            Sfx.stopMusic();                                                           // (updateMusic starts the new one on the next frame)
+            what = n == 1 ? "Music: hidden song 1" : "Music: hidden song 2 (your workshop song)";
+        }
+        soundToast = what;
+        soundToastUntil = System.currentTimeMillis() + 2200;
+    }
+
+    private void resetSoundTrackers() {
+        java.util.Arrays.fill(lastHp, 0);
+        java.util.Arrays.fill(lastUltReady, false);
+        lastWaveSeen = -1;
+        pendingWaveSound = null;
+        java.util.Arrays.fill(levelsGained, 0);
+        for (Player p : players) levelsGained[p.playerNumber] = p.level; // a loaded game starts counting from the level it was saved at
+    }
+
     // ------------------------------------------------------------- ultimates
 
     /** Fires this player's ultimate. Returns false (and spends nothing) if it can't go off right now. */
     private boolean activateUltimate(Player p, long now) {
         if (p.playerClass == PlayerClass.TANK) {
-            return p.activateThorns(now);
+            boolean ok = p.activateThorns(now);
+            if (ok) Sfx.play(Sfx.Id.THORNS_ON);
+            return ok;
         }
         // Ranger: GIANT ARROW -- aimed at the nearest living enemy no matter where you're facing
         Enemy nearest = null;
@@ -1224,6 +1510,7 @@ public class GamePanel extends JPanel {
                 nearest.centerX() - p.centerX(), nearest.centerY() - p.centerY(),
                 p.giantArrowDamage(), p.playerNumber);
         giantArrows.add(arrow);
+        Sfx.play(Sfx.Id.GIANT_ARROW);
         return true;
     }
 
@@ -1249,28 +1536,32 @@ public class GamePanel extends JPanel {
         giantArrows.removeIf(a -> !a.alive);
     }
 
-    /** Thorns: each pulse (spikes fully out) hurts every enemy touching the aura -- 50% of the Tank's
-     *  current damage plus 10% of that enemy's max HP, and shoves it away. Kills don't recharge the ultimate. */
+    /** Thorns is retaliation: when an enemy lands a melee hit on a Tank whose Thorns is up (Enemy.update queues it),
+     *  that enemy takes 50% of the Tank's current damage plus 5% of its own max HP (2% for bosses) and gets shoved
+     *  away. The spiky aura pulsing is only a visual. Kills don't recharge the ultimate. */
     private void updateThorns(long nowMs) {
         for (Player p : players) {
-            if (!p.alive || p.playerClass != PlayerClass.TANK || !p.thornsPulseDue(nowMs)) continue;
-            double reach = laststand.fx.UltimateArt.THORN_BASE_RADIUS + laststand.fx.UltimateArt.THORN_SPIKE_REACH;
-            for (Enemy enemy : waveManager.getEnemies()) {
-                if (!enemy.alive) continue;
-                double d = Math.hypot(enemy.centerX() - p.centerX(), enemy.centerY() - p.centerY());
-                if (d > reach + enemy.size / 2.0) continue;
-                try {
-                    int raw = p.thornsBaseDamage() + (int) Math.round(enemy.maxHealth * Player.THORNS_MAX_HP_BONUS);
-                    int dealt = enemy.scaleIncoming(raw);
-                    enemy.damage(dealt);
-                    if (enemy.alive) enemy.applyKnockback(p.centerX(), p.centerY(), Player.THORNS_KNOCKBACK); // bosses are immune as usual
-                    spawnDamagePopup(enemy.centerX(), enemy.centerY(), dealt, false, nowMs);
-                    if (!enemy.alive) onEnemyKilled(enemy, p, true);
-                } catch (RuntimeException ex) {
-                    System.err.println("Thorns hit resolution threw for " + enemy.type);
-                    ex.printStackTrace();
+            if (p.pendingThornsRetaliation.isEmpty()) continue;
+            boolean struckSomething = false;
+            if (p.alive && p.playerClass == PlayerClass.TANK) {
+                for (Enemy enemy : new ArrayList<>(p.pendingThornsRetaliation)) {
+                    if (!enemy.alive) continue;
+                    struckSomething = true;
+                    try {
+                        int raw = p.thornsBaseDamage() + (int) Math.round(enemy.maxHealth * Player.thornsMaxHpBonusFor(enemy));
+                        int dealt = enemy.scaleIncoming(raw);
+                        enemy.damage(dealt);
+                        if (enemy.alive) enemy.applyKnockback(p.centerX(), p.centerY(), Player.THORNS_KNOCKBACK); // bosses are immune as usual
+                        spawnDamagePopup(enemy.centerX(), enemy.centerY(), dealt, false, nowMs);
+                        if (!enemy.alive) onEnemyKilled(enemy, p, true);
+                    } catch (RuntimeException ex) {
+                        System.err.println("Thorns retaliation threw for " + enemy.type);
+                        ex.printStackTrace();
+                    }
                 }
             }
+            p.pendingThornsRetaliation.clear();
+            if (struckSomething) Sfx.play(Sfx.Id.THORNS_PULSE);
         }
     }
 
@@ -1291,6 +1582,7 @@ public class GamePanel extends JPanel {
 
     /** Ranger's bow shot -- unchanged from before the weapon remake. */
     private void fireArrow(Player p, long nowMs) {
+        Sfx.play(Sfx.Id.SHOOT_ARROW);
         double speedMult = 1 + p.arrowSpeedBonusPercent() / 100.0; // Arrow Speed enchant
         Projectile proj = new Projectile(
                 p.centerX(), p.centerY(),
@@ -1307,6 +1599,7 @@ public class GamePanel extends JPanel {
      *  on its own well before hitting a wall in the open), medium fire rate, small knockback, a
      *  little smaller than an arrow. */
     private void fireDagger(Player p, long nowMs) {
+        Sfx.play(Sfx.Id.THROW_DAGGER);
         Projectile proj = new Projectile(
                 p.centerX(), p.centerY(),
                 p.facingX * Player.DAGGER_SPEED_PX, p.facingY * Player.DAGGER_SPEED_PX,
@@ -1324,6 +1617,7 @@ public class GamePanel extends JPanel {
      *  fast fire rate (its own cooldown, independent of the bow's), no knockback at all, a lot
      *  smaller than the Dagger. Fired both automatically (out of arrows) and on demand (slot 3). */
     private void fireCombatPin(Player p, long nowMs) {
+        Sfx.play(Sfx.Id.PIN_STAB);
         Projectile proj = new Projectile(
                 p.centerX(), p.centerY(),
                 p.facingX * Player.COMBAT_PIN_SPEED_PX, p.facingY * Player.COMBAT_PIN_SPEED_PX,
@@ -1391,6 +1685,7 @@ public class GamePanel extends JPanel {
                                     : new CritResult(proj.damage, false);
                             int dealt = enemy.scaleIncoming(result.damage()); // Armored bosses take reduced damage
                             enemy.damage(dealt);
+                            Sfx.play(Sfx.Id.HIT_ENEMY);
                             if (proj.knockback > 0) enemy.applyKnockback(proj.x, proj.y, proj.knockback);
                             spawnDamagePopup(enemy.centerX(), enemy.centerY(), dealt, result.crit(), nowMs);
                             if (!enemy.alive) onEnemyKilled(enemy, owner);
@@ -1442,12 +1737,12 @@ public class GamePanel extends JPanel {
         camY = (int) Math.round(fy - viewportH() / 2.0);
     }
 
+    /** The BACK TO MENU button must be CLICKED (see the mouse listener) -- no key does it. Keys pressed here (like Space or Enter
+     *  mashed during the fight) are thrown away every frame so they can't carry over into the main menu and pick "Play". */
     private void tickGameOver() {
-        if (input.wasJustPressed(KeyEvent.VK_SPACE) || input.wasJustPressed(KeyEvent.VK_ENTER)) {
-            input.consume(KeyEvent.VK_SPACE);
-            input.consume(KeyEvent.VK_ENTER);
-            returnToMenuFromGameOver();
-        }
+        input.consume(KeyEvent.VK_SPACE);
+        input.consume(KeyEvent.VK_ENTER);
+        input.consume(KeyEvent.VK_ESCAPE);
     }
 
     private void returnToMenuFromGameOver() {
@@ -1484,6 +1779,23 @@ public class GamePanel extends JPanel {
                 }
                 mg.dispose();
             }
+            if (soundTestOpen) {
+                g.setColor(new Color(6, 8, 14, 255));
+                g.fillRect(0, 0, logicalW + 1, logicalH + 1);
+                Graphics2D tg = (Graphics2D) g.create();
+                tg.translate(designOffsetX(), designOffsetY());
+                soundTest.render(tg);
+                tg.dispose();
+            }
+            if (soundToast != null && System.currentTimeMillis() < soundToastUntil) {
+                g.setFont(new Font("SansSerif", Font.BOLD, 16));
+                int tw = g.getFontMetrics().stringWidth(soundToast);
+                int tx = (logicalW - tw) / 2;
+                g.setColor(new Color(0, 0, 0, 170));
+                g.fillRoundRect(tx - 14, 8, tw + 28, 30, 12, 12);
+                g.setColor(Color.WHITE);
+                g.drawString(soundToast, tx, 29);
+            }
         } catch (RuntimeException ex) {
             // Same safety net as tick() -- a bad render frame gets logged and skipped (last
             // good frame just stays on screen) instead of tearing down the whole window.
@@ -1509,7 +1821,7 @@ public class GamePanel extends JPanel {
         }
         g.setFont(new Font("SansSerif", Font.PLAIN, 14));
         g.setColor(Color.GRAY);
-        g.drawString("W/S select, SPACE confirm   |   F11: fullscreen", 380, 480);
+        g.drawString("W/S select, SPACE confirm   |   F11: fullscreen   |   F9: sound on/off", 380, 530);
 
         g.setFont(new Font("SansSerif", Font.PLAIN, 12));
         g.setColor(new Color(90, 90, 90));
@@ -1519,6 +1831,7 @@ public class GamePanel extends JPanel {
 
         if (confirmingLoad) drawConfirmLoad(g);
         if (confirmingNewGame) drawConfirmNewGame(g);
+        if (howToPlayOpen) drawHowToPlay(g);
     }
 
     /** "Play" Use-save-or-fresh prompt, shown only when a save exists. Defaults to keeping it. */
@@ -1907,7 +2220,7 @@ public class GamePanel extends JPanel {
 
         g.setFont(new Font("SansSerif", Font.PLAIN, 13));
         g.setColor(Color.GRAY);
-        String hint = "Click the button, or press SPACE / ENTER";
+        String hint = "Click the button to go back (the keyboard won't do it)";
         g.drawString(hint, (Constants.SCREEN_WIDTH - g.getFontMetrics().stringWidth(hint)) / 2, btnY + btnH + 30);
     }
 }

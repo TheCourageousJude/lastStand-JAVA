@@ -50,7 +50,7 @@ public enum UpgradeType {
         @Override public String effectFor(PlayerClass cls) { return "+2 damage per wave cleared, per level (stacks forever)"; }
     },
     RECHARGEABILITY("Rechargeability", new Color(90, 220, 220)) {
-        @Override public String effectFor(PlayerClass cls) { return "-1 charge needed for your ultimate / level (40 -> 20 at level 20)"; }
+        @Override public String effectFor(PlayerClass cls) { return "-1 charge needed for your ultimate on levels 1-4, 6-9, 11-14, 16-19 (20 -> 4); levels 5/10/15/20 boost Giant Arrow to 175%/200%/250%/300% of arrow damage"; }
     },
 
     // ---- RETIRED: kept only so old save files still deserialize. Never offered or applied. ----

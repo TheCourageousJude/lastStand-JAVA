@@ -169,11 +169,13 @@ public class Enemy extends Entity {
                 lastAttackAt = nowMs;
                 if (type.attackType == AttackType.MELEE) {
                     // Shield (if active) is checked inside takeDamage() itself now, works for any damage source
+                    boolean landed;
                     if (percentDamage > 0) {
-                        target.takeHybridDamage(damage, percentDamage, centerX(), centerY(), 10.0, nowMs); // raw (vs Defense) + % Max HP
+                        landed = target.takeHybridDamage(damage, percentDamage, centerX(), centerY(), 10.0, nowMs); // raw (vs Defense) + % Max HP
                     } else {
-                        target.takeDamage(damage, centerX(), centerY(), 10.0, nowMs); // Dodge + Armored applied inside
+                        landed = target.takeDamage(damage, centerX(), centerY(), 10.0, nowMs); // Dodge + Armored applied inside
                     }
+                    if (landed) target.registerThornsRetaliation(this, nowMs); // Tank's Thorns hits back at whoever just hit it
                 } else {
                     double ux = dist > 0.001 ? dx / dist : 0;
                     double uy = dist > 0.001 ? dy / dist : -1;

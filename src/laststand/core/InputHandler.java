@@ -47,6 +47,11 @@ public class InputHandler extends KeyAdapter {
         consumed.add(keyCode);
     }
 
+    /** Marks every key currently down as already-handled, so opening/closing an overlay never leaks a keypress into the screen underneath. */
+    public void consumeAllHeld() {
+        consumed.addAll(held);
+    }
+
     // Player 1 bindings
     public boolean p1Up()    { return isHeld(KeyEvent.VK_W); }
     public boolean p1Down()  { return isHeld(KeyEvent.VK_S); }

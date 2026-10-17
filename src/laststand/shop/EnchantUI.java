@@ -121,7 +121,7 @@ public class EnchantUI {
             if (amp == null) continue;
             any = true;
             g.setColor(Color.WHITE);
-            g.drawString(type.displayName + " " + EnchantType.romanNumeral(amp) + " -- " + describe(type, amp), px + 16, lineY);
+            g.drawString(type.displayName + " " + EnchantType.romanNumeral(amp) + " -- " + describe(p, type, amp), px + 16, lineY);
             lineY += 18;
         }
         if (!any) {
@@ -304,7 +304,11 @@ public class EnchantUI {
         return (v == Math.floor(v)) ? String.valueOf((int) v) : String.valueOf(v);
     }
 
-    private String describe(EnchantType type, int amp) {
+    private String describe(Player p, EnchantType type, int amp) {
+        if (type == EnchantType.SWORD_DAMAGE) // a percentage: also show what it is worth on THIS dagger
+            return "+" + (int) type.amountFor(amp) + "% dagger damage (+" + Player.daggerEnchantBonusFor(p.weaponTier, amp) + " on your dagger)";
+        if (type == EnchantType.ARROW_DAMAGE) // ...and on THIS bow
+            return "+" + (int) type.amountFor(amp) + "% arrow damage (+" + Player.arrowEnchantBonusFor(p.weaponTier, amp) + " on your bow)";
         double amt = type.amountFor(amp);
         String n = (amt == Math.floor(amt)) ? String.valueOf((int) amt) : String.valueOf(amt);
         String sign = type == EnchantType.QUICK_CHARGE || type == EnchantType.SWING_SPEED ? "-" : "+";

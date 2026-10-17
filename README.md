@@ -56,6 +56,9 @@ add `--type exe` (needs the WiX toolset) for an installer.
 | Open shop, or enchant if near the Enchanting Center | E | P |
 | Enchant wheel spins (Default / 30 / 90 / 270 / 450 tier, cheapest to priciest) | 1 2 3 4 5 | 7 8 9 0 - |
 | Toggle fullscreen             | F11 or Alt+Enter (works on every screen) |
+| Sound on / off                | F9 (works on every screen; shows a small "Sound: ON/OFF" note) |
+| Music on / off                | F10 (only matters once a song is playing; F9 mutes it too) |
+| **Sound Test** (secret)       | **Ctrl+S** from any screen -- see "Sound Test" below |
 | Menu confirm                  | SPACE or ENTER (either works, either player) |
 | Menu navigate                 | W/S or Up/Down (either works, either player) |
 | Open/close the Settings menu (was instant quit-to-menu — now opens How to Play / Back to Main Menu, the latter behind a Yes/No confirm) | ESC | ESC |
@@ -275,6 +278,111 @@ ultimate never recharge it (they still pay EXP/orbs as normal). Charge is saved 
 Code: `Player` (charge, triple-tap buffer, Thorns state, shield clock), `GiantArrow`, `fx/UltimateArt` (all the
 drawing), and `GamePanel.activateUltimate / updateGiantArrows / updateThorns`.
 
+## Sound (v1.1.5)
+
+All the sound effects are **synthesized in code** -- no audio files -- in an 8-bit chiptune style (square, triangle,
+sawtooth and noise voices with pitch slides, vibrato and 8-bit quantization), played through a small software mixer
+(`fx/Sfx.java`). 21 effects: menu blips, bow / dagger / combat-pin, hit and death, getting hurt, potion, shield,
+shop buy / error buzz, level-up, ultimate ready / Giant Arrow / Thorns on + pulse, wave start, boss warning, wave
+cleared, and game over. Rapid repeats are rate-limited so a crowd getting hit doesn't turn into noise. **F9** mutes, **F10** turns the background music off (see Controls).
+If the machine has no usable audio device the game just stays silent.
+
+Each effect is a short "recipe" at the top of `Sfx.java` -- pitch, length and loudness are plain numbers, so
+retuning one is a one-line edit. To use a recording instead, drop a WAV named after the effect into `src/sounds/`
+(see the README there; MP3/OGG aren't supported by Java's built-in audio -- export WAV).
+
+### Sound Test (secret screen)
+
+Press **Ctrl+S** on any screen -- main menu, mid-wave, shop, game over -- to open a hidden soundboard, in the style of
+MyInstants: one big glossy round button per sound effect, labelled with its name and colour-coded by group (Menu blue,
+Combat red, Items & Shop amber, Ultimates purple, Waves green). **Click a button to play it.** Ctrl+S or ESC closes the
+screen and puts you straight back where you were; the game is frozen while it's open.
+
+| Input | Does |
+|---|---|
+| Mouse click on a button | play that sound (the button squashes, sends out a ripple, and a ring sweeps around it while it plays) |
+| Arrows / WASD, then SPACE or ENTER | the same, from the keyboard (a dashed ring marks the keyboard selection) |
+| R | play all 21 in order, one after another (R again to stop) |
+| L | loop songs on/off (or click the LOOP pill beside the title): a song then repeats seamlessly until you press X |
+| X | stop / silence everything |
+| E | with any sound selected: open its editor (or click the EDIT pill): the **SFX Editor** for sound effects, the **Music Editor** for "??? 2". The first "???" is the original track and can't be edited |
+| F9 | sound on/off (a red banner reminds you when it's off) |
+
+The strip along the bottom describes the selected effect: where in the game it plays, its length, peak level, a
+**waveform with a moving playhead**, whether it's synthesized or a WAV override from `src/sounds/`, and its in-game rate
+limit (the soundboard ignores the rate limit so you can mash a button and always hear it). It plays through the same
+mixer and the same samples as the game, so what you hear is exactly what the game plays. A new `Sfx.Id` gets a button
+automatically; give it a line in the `INFO` table of `ui/SoundTestUI.java` to name, colour and describe it.
+
+### SFX Editor (change any sound effect inside the game)
+
+Select any sound effect on the Sound Test and press **E** (or click **EDIT SOUND**). Every effect is a short stack of
+**tones** -- layers of square, triangle, saw, noise or smooth air -- and the editor shows that stack: the list on the left is the
+layers, the panel on the right edits the selected one, and the strip on top is the exact waveform that will play (the selected
+layer's stretch of time is highlighted).
+
+| Setting | What it does |
+|---|---|
+| WAVE | square (with PULSE WIDTH: thin and reedy to full), triangle, saw, noise (hiss; NOISE SHORT is the metallic kind) or air (smooth whoosh) |
+| STARTS AT / LENGTH | when the layer begins and how long it lasts (5 ms steps) |
+| PITCH AT START / END | the pitch slides from one to the other, in semitone steps (shown with the nearest note name) |
+| VOLUME, FADE-OUT SPEED, FADE-IN | loudness and the shape of each layer |
+| VIBRATO SPEED / DEPTH | a wobble on the pitch |
+| HISS RATE / AIR CENTRE / BAND SHARPNESS | the same pitch controls for the noise and air waves |
+| ADD TONE / DUPLICATE / DELETE | build the sound out of more or fewer layers (up to 40) |
+| 8-BIT CRUNCH | on = the retro 8-bit rounding; off = smooth (used by the Dagger throw) |
+
+Hold a **-** or **+** to repeat. **Space** plays the sound as it is now (unsaved); **AUTO-PLAY** also plays it after every change.
+**Save** (Ctrl+S) writes `laststand_sfx.txt`, and from then on **the whole game** plays your version of that sound -- hits,
+shots, shop, menus, everything -- not only the Sound Test. **Discard** goes back to the last saved version, **RESET TO ORIGINAL**
+brings back the built-in sound (saving that removes the edit), **Ctrl+Z** undoes, and leaving with unsaved edits asks first.
+
+`laststand_sfx.txt` is a small text file with one `[SECTION]` per edited sound, so it can be backed up or shared; delete a section
+(or the file) to get the built-in sounds back. If a recorded WAV for a sound is in `src/sounds/`, the WAV still wins in the game
+(the editor warns you), so remove that file to hear your edit.
+
+### Music Editor (edit the "??? 2" track inside the game)
+
+Select **"??? 2"** on the Sound Test and press **E** (or click **EDIT TRACK**). It opens a piano roll for the hidden
+workshop tune -- no code, no rebuild. Nothing changes in the game until you **Save**; **Discard** throws your edits away.
+
+| Do this | To |
+|---|---|
+| Click an empty cell | add a note (drag right to stretch it as you click) |
+| Drag a note / drag its right edge | move it (time and pitch) / change its length |
+| Right-click, or Del | remove a note |
+| Arrow keys (with a note selected) | nudge it a step / up or down a semitone (Shift = octave) |
+| **1-5**, or the NEW NOTE LENGTH buttons | length of the next notes you add: 1/16, 1/8, 1/4, 1/2, a whole bar |
+| Chord row: **‹ ›** and the middle | move the bar's chord root by a semitone / switch major <-> minor (bass and arpeggio follow it) |
+| TEMPO, BARS, DRUMS COME IN AT, FULL SOUND AT | speed, length of the tune, and the bars where the drums and the fuller melody sound start (hold + / - to repeat) |
+| **Ctrl+A** / **Shift+click** / **Shift+drag** | select **several notes**: Ctrl+A takes them all, Shift+click adds or removes one note, Shift+drag on an empty spot draws a selection box. Then **drag any selected note**, or press the **arrows** (Shift+Up/Down = an octave, Shift+Left/Right = a bar), and they all move together, keeping their spacing and stopping when one reaches an edge. **Del** removes them all, **Esc** deselects, and one **Ctrl+Z** undoes the whole move |
+| **G** (or the **SNAP** button) | the **grid** notes snap to when you place or move them, separate from the note length: **1/16** (the default: any note can start on any sixteenth, so a 1/4 or 1/2 note can sit on an off-beat), **1/8**, **1/4**, or **AUTO** (the old rule: a note snaps to its own length, at most a beat). The arrow keys nudge by the same grid |
+| **F** (or the **CHORDS FOLLOW** pill) | with it **ON** (the default), when **all** notes are selected (Ctrl+A) and moved, the **chords go with them**: moving up/down transposes every chord by the same number of semitones, and moving by whole bars (Shift+Left/Right, or dragging) slides the chords along by that many bars (a bar left with nothing becomes "none"; a chord pushed off the end is gone until Ctrl+Z). Moving only part of the tune leaves the chords alone, because the notes left behind still need them. One Ctrl+Z undoes notes and chords together |
+| **Ctrl+Up** / **Ctrl+Down** | move **every chord** up or down a semitone. Chords and notes are separate (moving notes never changes the chords, and the chord cells below only recolour the notes that fit), so this is how to shift the chords with the notes |
+| **Right-click** a chord cell | **no chord** for that bar: no bass and no arpeggio (the drums still play). Click the cell again to bring its chord back; in the file it's written `-`, e.g. `chords=C - Am F` |
+| **T** (with a note selected) | **tie** it to the note touching it on its left: it then carries that note on with no new start (T again to untie) |
+| **Space** / **L** | play or stop the tune you're editing (unsaved) / loop it |
+| Wheel, Shift+wheel, PgUp / PgDn, the SONG strip | scroll pitch / bars / by 4 bars / jump anywhere |
+| **Ctrl+S** or SAVE | save |
+| DISCARD | go back to the last saved version |
+| **Ctrl+Z** / UNDO | undo (even a discard) |
+| **Esc** or BACK | leave; if there are unsaved edits it asks: save, discard, or keep editing |
+
+The melody is **one voice**, like a real NES square channel: a new note replaces whatever it lands on, and a note can't
+cross a bar line (use two notes, and press **T** on the second one to tie it: the sound carries on across the line). Rows tinted green are the notes that fit the bar's chord -- a handy guide.
+
+**Saving** writes `laststand_workshop_track.txt` next to the game (the same place as the save files); from then on
+"??? 2" plays your version. It's a small text file -- one `barN=E5 1, G5 .5, R .5 ...` line per bar (`R` is a rest, `T 1.5` is a tie: it holds the note before it for 1.5 more beats) -- so it can also be
+edited by hand, backed up, or shared. **Delete the file** to get the original starter tune back (RESET TO STARTER in the
+editor does the same thing as an edit you can still save or discard). A broken file is ignored with a note on the console.
+
+
+**Pasting bars from code into the tune file.** Bars can be pasted the way they look in code: quotes, a trailing comma, a
+`// comment` and curly quotes are all ignored, and lines without `bar1=` are taken as the next bar in order (so a tune file
+can be just the bar lines). The melody and the chords are separate lines: pasting bars changes only the melody, so also set
+`chords=` (and `bpm=`), or the chords stay as they were. A line that really can't be read isn't skipped quietly any more:
+the Music Editor and the "??? 2" button in the Sound Test say what's wrong, and when `bpm=` or `chords=` is missing they
+say what was assumed (96 BPM / every bar C).
 ## Healing Potion (replaced the stackable Medic Kit in v1.1.5)
 
 One rechargeable flask with **3 capacity bars** (shown on hotbar slot 2). It heals **25% of
@@ -514,6 +622,6 @@ src/laststand/
            EnchantCategory, EnchantSpinOption, EnchantType, EnchantUI
   world/   Arena, Portal, TileType, ArenaTheme, Sky
   wave/    WaveManager, Scenario, BossScenario
-  ui/      HUD
+  ui/      HUD, SoundTestUI
   fx/      DamagePopup
 ```
